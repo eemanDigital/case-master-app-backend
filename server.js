@@ -6,7 +6,6 @@ const cors = require("cors");
 const morgan = require("morgan");
 const rateLimit = require("express-rate-limit");
 const helmet = require("helmet");
-const { JSDOM } = require("jsdom");
 const createDOMPurify = require("dompurify");
 const hpp = require("hpp");
 const mongoSanitize = require("express-mongo-sanitize");
