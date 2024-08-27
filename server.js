@@ -71,14 +71,23 @@ app.use(mongoSanitize());
 // clears parameter polution
 app.use(hpp());
 
-// serving static file
+// Serve static files from the 'public' directory
 app.use(express.static(path.join(__dirname, "public")));
+
 // Set up Pug as the view engine
 app.set("view engine", "pug");
 app.set("views", path.join(__dirname, "views"));
 
-// Serve static files from the 'views' directory
-app.use("/css", express.static(path.join(__dirname, "views/css")));
+// Serve static CSS files from the 'public/css' directory
+// app.use('/css', express.static(path.join(__dirname, 'public/css')));
+
+// Handle 404 errors
+app.use((req, res, next) => {
+  res.status(404).render("error", {
+    statusCode: 404,
+    message: "Can't find " + req.originalUrl + " on this server",
+  });
+});
 
 // app.use(cors());
 app.use(
