@@ -52,6 +52,7 @@ const reportSchema = new mongoose.Schema(
     toJSON: { virtuals: true },
     toObject: { virtuals: true },
   }
+  // { timestamps: true }
 );
 
 // populate case and reporter
