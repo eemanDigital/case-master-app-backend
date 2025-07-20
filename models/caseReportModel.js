@@ -47,6 +47,9 @@ const reportSchema = new mongoose.Schema(
         ref: "User",
       },
     ],
+
+    isDeleted: { type: Boolean, default: false },
+    deletedAt: { type: Date },
   },
   {
     toJSON: { virtuals: true },
