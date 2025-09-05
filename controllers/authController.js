@@ -235,8 +235,7 @@ exports.logout = (req, res) => {
     expires: new Date(0),
     httpOnly: true,
     secure: process.env.NODE_ENV === "production" ? true : false,
-    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-    // sameSite: "none",
+    sameSite: "none",
   });
   res.status(200).json({ status: "success" });
 };

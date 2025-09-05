@@ -18,7 +18,7 @@ exports.createSendToken = (user, statusCode, res) => {
     // ),
     httpOnly: true,
     // sameSite: "none",
-    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    sameSite: process.env.NODE_ENV === "production" ? "strict" : "lax",
   };
   if (process.env.NODE_ENV === "production") cookieOptions.secure = true;
 

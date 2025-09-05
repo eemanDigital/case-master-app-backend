@@ -24,7 +24,6 @@ const notificationRouter = require("./routes/notificationRoutes");
 const contactRouter = require("./routes/contactRoutes");
 const noteRouter = require("./routes/noteRoutes");
 const documentRecordRouter = require("./routes/documentRecordRoute");
-const softDeleteRouter = require("./routes/softDeleteRoute");
 const AppError = require("./utils/appError");
 const errorController = require("./controllers/errorController");
 
@@ -135,7 +134,6 @@ app.use("/api/v1/contacts", contactRouter);
 app.use("/api/v1/events", eventRouter);
 app.use("/api/v1/notes", noteRouter);
 app.use("/api/v1/documentRecord", documentRecordRouter);
-app.use("/api/v1/soft_delete", softDeleteRouter);
 
 // // Handle root URL
 app.get("/", (req, res) => {

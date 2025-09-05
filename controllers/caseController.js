@@ -38,29 +38,28 @@ exports.getCases = catchAsync(async (req, res, next) => {
   });
 });
 
-//get soft-deleted cases
-exports.getSoftDeletedCases = catchAsync(async (req, res, next) => {
+// get all deleted cases
+exports.getDeletedCases = catchAsync(async (req, res, next) => {
   // Fetch cases from the database
-  let cases = await Case.find({ isDeleted: true }).sort("-deletedAt");
+  let cases = await Case.find({ isDeleted: true }).sort("-filingDate");
 
   // Handle the case where no cases are found
   if (cases.length === 0) {
     return next(new AppError("No case found", 404));
   }
 
-  res.set("Cache-Control", "no-store"); // Disable caching for this endpoint
   // set redis key for caching
   // setRedisCache("cases", cases);
 
   // Send the response with the fetched cases
   res.status(200).json({
     results: cases.length,
-    // fromCache: false,
+    fromCache: false,
     data: cases,
   });
 });
 
-// get case by id
+// get single case by id
 exports.getCase = catchAsync(async (req, res, next) => {
   //if id/caseId provided does not exist
   const _id = req.params.caseId;
@@ -84,6 +83,7 @@ exports.getCase = catchAsync(async (req, res, next) => {
   });
 });
 
+// update case by id
 exports.updateCase = catchAsync(async (req, res, next) => {
   const caseId = req.params.caseId;
   const updatedCase = await Case.findByIdAndUpdate({ _id: caseId }, req.body, {
@@ -121,6 +121,7 @@ exports.deleteCase = catchAsync(async (req, res, next) => {
   });
 });
 
+// Get cases grouped by account officer
 exports.getCasesByAccountOfficer = catchAsync(async (req, res, next) => {
   const results = await Case.aggregate([
     {

@@ -47,16 +47,11 @@ const reportSchema = new mongoose.Schema(
         ref: "User",
       },
     ],
-
-    isDeleted: { type: Boolean, default: false },
-    deletedAt: Date,
-    deletedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   },
   {
     toJSON: { virtuals: true },
     toObject: { virtuals: true },
   }
-  // { timestamps: true }
 );
 
 // populate case and reporter
