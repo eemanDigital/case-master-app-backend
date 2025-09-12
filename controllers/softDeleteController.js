@@ -1,3 +1,14 @@
+<<<<<<< HEAD
+// This controller handles soft deletion and restoration of items in the database.
+// It exports two functions: softDeleteItem and restoreDelete.
+const AppError = require("../utils/appError");
+const catchAsync = require("../utils/catchAsync");
+
+exports.softDeleteItem = ({ model, modelName }) =>
+  catchAsync(async (req, res, next) => {
+    const { id } = req.params;
+    const userId = req.user.id;
+=======
 const AppError = require("../utils/appError");
 const catchAsync = require("../utils/catchAsync");
 
@@ -6,11 +17,16 @@ exports.softDeleteItem = ({ model, modelName }) =>
   catchAsync(async (req, res, next) => {
     const { id } = req.params;
     const userId = req.user._id;
+>>>>>>> more_fix
 
     const item = await model.findById(id);
 
     if (!item) {
+<<<<<<< HEAD
+      return next(new AppError(`${modelName} not found`, 404));
+=======
       return next(new AppError(`${modelName} not found with ID: ${id}`, 404));
+>>>>>>> more_fix
     }
 
     if (item.isDeleted) {
@@ -23,6 +39,49 @@ exports.softDeleteItem = ({ model, modelName }) =>
 
     try {
       await item.save();
+<<<<<<< HEAD
+      return res
+        .status(200)
+        .json({ message: `${modelName} successfully deleted` });
+    } catch (error) {
+      console.error(error);
+      return res.status(500).json({ message: `Failed to delete ${modelName}` });
+    }
+  });
+
+exports.restoreDelete = ({ model, modelName }) =>
+  catchAsync(async (req, res, next) => {
+    const { id } = req.params;
+
+    const item = await model.findById(id);
+
+    if (!item) {
+      return next(new AppError(`${modelName} not found`, 404));
+    }
+    if (!item.isDeleted) {
+      return next(
+        new AppError(
+          `${modelName} already restored, please refresh your page`,
+          400
+        )
+      );
+    }
+    item.isDeleted = false;
+    item.deletedAt = null;
+    item.deletedBy = null;
+    try {
+      await item.save();
+      return res
+        .status(200)
+        .json({ message: `${modelName} successfully restored` });
+    } catch (error) {
+      console.error(error);
+      return res
+        .status(500)
+        .json({ message: `Failed to restore ${modelName}` });
+    }
+  });
+=======
 
       res.status(200).json({
         message: `${modelName} soft deleted successfully`,
@@ -62,3 +121,22 @@ exports.restoreItem = ({ model, modelName }) =>
       data: item,
     });
   });
+
+
+// get all deleted items
+exports.getDeletedItems = ({ model }) =>
+  catchAsync(async (req, res, next) => {
+    // Fetch soft-deleted items
+    let items = await model
+      .find({ isDeleted: true })
+      .sort({ deletedAt: -1 });
+
+    // Always return 200, even if empty
+    res.status(200).json({
+      results: items.length,
+      fromCache: false,
+      data: items,
+    });
+  });
+
+>>>>>>> more_fix

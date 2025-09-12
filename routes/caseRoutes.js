@@ -10,7 +10,11 @@ const {
   getYearlyNewCases,
   getCasesByAccountOfficer,
   getCasesByClient,
+<<<<<<< HEAD
+  getSoftDeletedCases,
+=======
   getDeletedCases,
+>>>>>>> more_fix
 } = require("../controllers/caseController");
 const { protect, restrictTo } = require("../controllers/authController");
 const {
@@ -27,6 +31,7 @@ const {
   softDeleteItem,
 
   restoreItem,
+  getDeletedItems,
 } = require("../controllers/softDeleteController.js");
 
 // const cacheMiddleware = require("../utils/cacheMiddleware.js");
@@ -41,6 +46,7 @@ router.get(
   // cacheMiddleware(() => "$caseStatus"),
   getCasesByGroup("$caseStatus", Case)
 );
+
 router.get(
   "/cases-by-court",
   // cacheMiddleware(() => "$courtName"),
@@ -104,11 +110,17 @@ router.get(
   // cacheMiddleware(() => "cases"),
   getCases
 );
+<<<<<<< HEAD
+
+// soft-deleted cases
+router.get("/soft-deleted-cases", getSoftDeletedCases);
+=======
 router.get(
   "/soft-deleted-cases",
 
-  getDeletedCases
+  getDeletedItems({ model: Case })
 );
+>>>>>>> more_fix
 router.post("/", createCase);
 
 // Document upload route
