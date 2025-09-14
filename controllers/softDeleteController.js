@@ -25,7 +25,7 @@ exports.softDeleteItem = ({ model, modelName }) =>
       await item.save();
 
       res.status(200).json({
-        message: `${modelName} soft deleted successfully`,
+        message: `${modelName} soft deleted`,
         deletedId: id,
       });
     } catch (error) {
@@ -67,7 +67,10 @@ exports.restoreItem = ({ model, modelName }) =>
 exports.getDeletedItems = ({ model }) =>
   catchAsync(async (req, res, next) => {
     // Fetch soft-deleted items
-    let items = await model.find({ isDeleted: true }).sort({ deletedAt: -1 });
+    let items = await model
+      .find({ isDeleted: true })
+      .sort({ deletedAt: -1 })
+      .populate("deletedBy", "firstName lastName role");
 
     // Always return 200, even if empty
     res.status(200).json({

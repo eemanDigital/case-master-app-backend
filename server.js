@@ -84,6 +84,7 @@ app.set("views", path.join(__dirname, "views"));
 // }
 
 app.use(morgan("dev"));
+
 // Rate limiter
 function rateLimiter(windowMs, message, max) {
   const limiter = rateLimit({
