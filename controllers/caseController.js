@@ -1,6 +1,7 @@
 const Case = require("../models/caseModel");
 const cron = require("node-cron"); //handle schedule for soft deleted data
 const AppError = require("../utils/appError");
+const PaginationServiceFactory = require("../services/PaginationServiceFactory");
 const catchAsync = require("../utils/catchAsync");
 // const setRedisCache = require("../utils/setRedisCache");
 
@@ -18,24 +19,128 @@ exports.createCase = catchAsync(async (req, res, next) => {
  * If no cases are found, an error is returned.
  * The fetched cases are also stored in Redis.
  */
-exports.getCases = catchAsync(async (req, res, next) => {
-  // Fetch cases from the database
-  let cases = await Case.find({ isDeleted: false }).sort("-filingDate");
+// exports.getCases = catchAsync(async (req, res, next) => {
+//   // Fetch cases from the database
+//   let cases = await Case.find({ isDeleted: false }).sort("-filingDate");
 
-  // Handle the case where no cases are found
-  if (cases.length === 0) {
-    return next(new AppError("No case found", 404));
+//   // Handle the case where no cases are found
+//   if (cases.length === 0) {
+//     return next(new AppError("No case found", 404));
+//   }
+
+//   // set redis key for caching
+//   // setRedisCache("cases", cases);
+
+//   // Send the response with the fetched cases
+//   res.status(200).json({
+//     results: cases.length,
+//     fromCache: false,
+//     data: cases,
+//   });
+// });
+// controllers/caseController.js
+
+// Create pagination service for Case model
+const casePagination = PaginationServiceFactory.createService(Case);
+
+// Replace your existing getCases with advanced pagination version
+exports.getCases = catchAsync(async (req, res, next) => {
+  const result = await casePagination.paginate(req.query);
+
+  // Handle no cases found
+  if (result.data.length === 0) {
+    return res.status(200).json({
+      success: true,
+      message: "No cases found",
+      data: [],
+      pagination: result.pagination,
+    });
   }
 
-  // set redis key for caching
-  // setRedisCache("cases", cases);
+  res.status(200).json(result);
+});
 
-  // Send the response with the fetched cases
-  res.status(200).json({
-    results: cases.length,
-    fromCache: false,
-    data: cases,
-  });
+// Advanced search for cases
+exports.searchCases = catchAsync(async (req, res, next) => {
+  const { criteria, options } = req.body;
+
+  if (!criteria) {
+    return res.status(400).json({
+      success: false,
+      message: "Search criteria is required",
+    });
+  }
+
+  try {
+    const result = await casePagination.advancedSearch(criteria, options);
+
+    if (result.data.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: "No cases found matching your criteria",
+        ...result,
+      });
+    }
+
+    res.status(200).json(result);
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: "Invalid search criteria",
+      error: error.message,
+    });
+  }
+});
+
+// Get cases by specific lawyer
+exports.getLawyerCases = catchAsync(async (req, res, next) => {
+  const customFilter = { lawyer: req.params.lawyerId };
+  const result = await casePagination.paginate(req.query, customFilter);
+
+  res.status(200).json(result);
+});
+
+// Get cases by status
+exports.getCasesByStatus = catchAsync(async (req, res, next) => {
+  const customFilter = { status: req.params.status };
+  const result = await casePagination.paginate(req.query, customFilter);
+
+  res.status(200).json(result);
+});
+
+// Get upcoming hearings
+exports.getUpcomingHearings = catchAsync(async (req, res, next) => {
+  const today = new Date();
+  const customFilter = {
+    nextHearingDate: { $gte: today },
+    isDeleted: { $ne: true },
+  };
+
+  const result = await casePagination.paginate(
+    { ...req.query, sort: "nextHearingDate" },
+    customFilter
+  );
+
+  res.status(200).json(result);
+});
+
+// Get cases filed within date range
+exports.getCasesByFilingDate = catchAsync(async (req, res, next) => {
+  const { startDate, endDate } = req.query;
+
+  if (!startDate || !endDate) {
+    return next(new AppError("Start date and end date are required", 400));
+  }
+
+  const customFilter = {
+    filingDate: {
+      $gte: new Date(startDate),
+      $lte: new Date(endDate),
+    },
+  };
+
+  const result = await casePagination.paginate(req.query, customFilter);
+  res.status(200).json(result);
 });
 
 // get single case by id
