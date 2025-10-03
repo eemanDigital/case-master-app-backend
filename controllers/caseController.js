@@ -20,34 +20,72 @@ exports.createCase = catchAsync(async (req, res, next) => {
  * The fetched cases are also stored in Redis.
  */
 // exports.getCases = catchAsync(async (req, res, next) => {
-//   // Fetch cases from the database
-//   let cases = await Case.find({ isDeleted: false }).sort("-filingDate");
-
-//   // Handle the case where no cases are found
-//   if (cases.length === 0) {
-//     return next(new AppError("No case found", 404));
+//   const queryObj = {};
+//   let {
+//     caseSummary,
+//     accountOfficer,
+//     courtNo,
+//     sort,
+//     casePriority,
+//     natureOfCase,
+//     filingDate,
+//     order = "asc",
+//   } = req.query;
+//   if (caseSummary) {
+//     queryObj.caseSummary = { $regex: caseSummary, $options: "i" };
+//   }
+//   if (accountOfficer) {
+//     queryObj.accountOfficer = accountOfficer;
 //   }
 
-//   // set redis key for caching
-//   // setRedisCache("cases", cases);
+//   if (courtNo) {
+//     queryObj.courtNo = courtNo;
+//   }
 
-//   // Send the response with the fetched cases
-//   res.status(200).json({
-//     results: cases.length,
-//     fromCache: false,
-//     data: cases,
-//   });
+//   if (casePriority) {
+//     queryObj.casePriority = casePriority;
+//   }
+
+//   if (natureOfCase) {
+//     queryObj.natureOfCase = natureOfCase;
+//   }
+
+//   //sample query: http://localhost:3000/api/v1/cases?filingDate=2024-09-01
+//   if (filingDate) {
+//     const date = new Date(filingDate);
+//     const nextDate = new Date(date);
+//     nextDate.setDate(nextDate.getDate() + 1); // Increment by one day
+//     queryObj.filingDate = { $gte: date, $lt: nextDate };
+//   }
+
+//   console.log("Query", queryObj);
+//   let results = Case.find(queryObj);
+
+//   if (sort) {
+//     const sortObj = {};
+//     // let sortOrder = sort.startsWith("-") ? -1 : 1;
+//     // sort = sort.replace("-", "");
+
+//     let sortOrder = order === "desc" ? -1 : 1;
+
+//     sortObj[sort] = sortOrder;
+
+//     results.sort(sortObj);
+//     console.log(sortObj);
+//   }
+
+//   const cases = await results;
+
+//   res.status(200).json({ cases });
 // });
-// controllers/caseController.js
 
 // Create pagination service for Case model
 const casePagination = PaginationServiceFactory.createService(Case);
 
-// Replace your existing getCases with advanced pagination version
+// Get all cases with advanced pagination
 exports.getCases = catchAsync(async (req, res, next) => {
   const result = await casePagination.paginate(req.query);
 
-  // Handle no cases found
   if (result.data.length === 0) {
     return res.status(200).json({
       success: true,
@@ -92,54 +130,59 @@ exports.searchCases = catchAsync(async (req, res, next) => {
   }
 });
 
-// Get cases by specific lawyer
-exports.getLawyerCases = catchAsync(async (req, res, next) => {
-  const customFilter = { lawyer: req.params.lawyerId };
-  const result = await casePagination.paginate(req.query, customFilter);
-
-  res.status(200).json(result);
-});
-
 // Get cases by status
 exports.getCasesByStatus = catchAsync(async (req, res, next) => {
-  const customFilter = { status: req.params.status };
+  const customFilter = { caseStatus: req.params.status };
   const result = await casePagination.paginate(req.query, customFilter);
 
   res.status(200).json(result);
 });
 
-// Get upcoming hearings
-exports.getUpcomingHearings = catchAsync(async (req, res, next) => {
-  const today = new Date();
-  const customFilter = {
-    nextHearingDate: { $gte: today },
-    isDeleted: { $ne: true },
-  };
-
-  const result = await casePagination.paginate(
-    { ...req.query, sort: "nextHearingDate" },
-    customFilter
-  );
+// Get cases by account officer
+exports.getCasesByAccountOfficer = catchAsync(async (req, res, next) => {
+  const customFilter = { accountOfficer: req.params.accountOfficerId };
+  const result = await casePagination.paginate(req.query, customFilter);
 
   res.status(200).json(result);
 });
 
-// Get cases filed within date range
-exports.getCasesByFilingDate = catchAsync(async (req, res, next) => {
-  const { startDate, endDate } = req.query;
-
-  if (!startDate || !endDate) {
-    return next(new AppError("Start date and end date are required", 400));
-  }
-
-  const customFilter = {
-    filingDate: {
-      $gte: new Date(startDate),
-      $lte: new Date(endDate),
-    },
-  };
-
+// Get cases by client
+exports.getCasesByClient = catchAsync(async (req, res, next) => {
+  const customFilter = { client: req.params.clientId };
   const result = await casePagination.paginate(req.query, customFilter);
+
+  res.status(200).json(result);
+});
+
+// Get cases by court
+exports.getCasesByCourt = catchAsync(async (req, res, next) => {
+  const customFilter = { courtName: req.params.courtName };
+  const result = await casePagination.paginate(req.query, customFilter);
+
+  res.status(200).json(result);
+});
+
+// Get cases by category
+exports.getCasesByCategory = catchAsync(async (req, res, next) => {
+  const customFilter = { category: req.params.category };
+  const result = await casePagination.paginate(req.query, customFilter);
+
+  res.status(200).json(result);
+});
+
+// Get cases by priority
+exports.getCasesByPriority = catchAsync(async (req, res, next) => {
+  const customFilter = { casePriority: req.params.priority };
+  const result = await casePagination.paginate(req.query, customFilter);
+
+  res.status(200).json(result);
+});
+
+// Get active cases (default)
+exports.getActiveCases = catchAsync(async (req, res, next) => {
+  const customFilter = { active: true, isDeleted: { $ne: true } };
+  const result = await casePagination.paginate(req.query, customFilter);
+
   res.status(200).json(result);
 });
 

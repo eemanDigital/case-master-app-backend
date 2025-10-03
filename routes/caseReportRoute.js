@@ -3,6 +3,7 @@ const {
   createReport,
   getReport,
   getReports,
+  getCaseReports,
   getUpcomingMatter,
   updateCaseReport,
   deleteReport,
@@ -41,6 +42,8 @@ router.get(
     model: Report,
   })
 );
+
+router.get("/cases/:caseId", getCaseReports); // Get reports by caseId
 
 router.delete(
   "/soft-delete/:id",

@@ -1,5 +1,4 @@
-//
-
+// config/modelConfigs.js - Fixed for your Case model
 const modelConfigs = {
   Report: {
     searchableFields: ["update", "adjournedFor", "clientEmail"],
@@ -8,39 +7,66 @@ const modelConfigs = {
       "caseReported",
       "lawyersInCourt",
       "clientEmail",
+      "caseId",
+      "caseSearch",
       "includeDeleted",
       "onlyDeleted",
     ],
     defaultSort: "-date",
     dateField: "date",
     maxLimit: 50,
+    defaultPopulate: [
+      {
+        path: "caseReported",
+        select:
+          "firstParty secondParty suitNo courtNo client courtName location state",
+      },
+      { path: "reportedBy", select: "firstName lastName middleName" },
+      { path: "lawyersInCourt", select: "firstName lastName middleName" },
+    ],
   },
 
-  // Add other models here
   Case: {
     searchableFields: [
       "firstParty.name.name",
       "secondParty.name.name",
+      "otherParty.name.name",
       "suitNo",
       "courtNo",
       "courtName",
       "location",
       "state",
+      "caseSummary",
+      "generalComment",
     ],
     filterableFields: [
-      "status",
+      "caseStatus",
       "courtName",
       "state",
       "location",
-      "lawyer",
+      "category",
+      "natureOfCase",
+      "casePriority",
+      "isFiledByTheOffice",
       "filingDate",
-      "nextHearingDate",
+      "accountOfficer",
+      "client",
       "includeDeleted",
       "onlyDeleted",
     ],
     defaultSort: "-filingDate",
     dateField: "filingDate",
     maxLimit: 100,
+    defaultPopulate: [
+      {
+        path: "accountOfficer",
+        select: "firstName lastName phone email photo",
+      },
+      {
+        path: "client",
+        select: "firstName lastName phone email",
+      },
+    ],
   },
 
   User: {
@@ -48,6 +74,7 @@ const modelConfigs = {
     filterableFields: ["role", "status", "state"],
     defaultSort: "firstName",
     maxLimit: 100,
+    defaultPopulate: [],
   },
 };
 

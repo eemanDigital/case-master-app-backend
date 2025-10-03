@@ -1,7 +1,4 @@
-// Generic Pagination Service
-// This service provides a reusable pagination mechanism for Mongoose models.
-// It supports filtering, searching, sorting, and populating related fields.
-
+// services/GenericPaginationService.js - Simplified for case filtering
 const QueryBuilder = require("../utils/queryBuilder");
 
 class GenericPaginationService {
@@ -10,8 +7,8 @@ class GenericPaginationService {
     this.config = {
       searchableFields: modelConfig.searchableFields || [],
       filterableFields: modelConfig.filterableFields || [],
-      defaultSort: modelConfig.defaultSort || "-createdAt",
-      dateField: modelConfig.dateField || "createdAt",
+      defaultSort: modelConfig.defaultSort || "-date",
+      dateField: modelConfig.dateField || "date",
       maxLimit: modelConfig.maxLimit || 100,
     };
   }
@@ -25,6 +22,8 @@ class GenericPaginationService {
         search,
         populate,
         select,
+        caseId, // Specific case ID
+        caseSearch, // Search term for cases
         ...filters
       } = queryParams;
 
@@ -32,17 +31,24 @@ class GenericPaginationService {
       const sanitizedLimit = Math.min(parseInt(limit), this.config.maxLimit);
       const sanitizedPage = Math.max(1, parseInt(page));
 
-      // Build filter - using fixed method
+      // Build base filter
       const baseFilter = QueryBuilder.buildMongooseFilter(
-        { search, ...filters },
+        { search, caseId, caseSearch, ...filters },
         this.config
       );
 
-      const finalFilter = { ...baseFilter, ...customFilter };
+      let finalFilter = { ...baseFilter, ...customFilter };
       const sortOptions = QueryBuilder.buildSort(sort, this.config.defaultSort);
-      const populateOptions = QueryBuilder.buildPopulate(populate);
 
-      // Execute query with pagination
+      // Handle case search - find cases matching the search and get their reports
+      if (caseSearch && !caseId) {
+        const caseIds = await this.findCaseIdsBySearch(caseSearch);
+        finalFilter.caseReported = { $in: caseIds };
+
+        // Remove the caseSearch flag from filter
+        delete finalFilter.caseSearch;
+      }
+
       const startIndex = (sanitizedPage - 1) * sanitizedLimit;
 
       let query = this.model.find(finalFilter);
@@ -51,8 +57,13 @@ class GenericPaginationService {
         query = query.select(select);
       }
 
+      // Handle population
+      const populateOptions = QueryBuilder.buildPopulate(populate);
       if (populateOptions && populateOptions.length > 0) {
         query = query.populate(populateOptions);
+      } else {
+        // Default population for reports
+        query = query.populate("caseReported reportedBy lawyersInCourt");
       }
 
       const [data, total] = await Promise.all([
@@ -67,7 +78,39 @@ class GenericPaginationService {
     }
   }
 
-  // UPDATED: Advanced search with better error handling
+  // NEW: Find case IDs by search term
+  async findCaseIdsBySearch(searchTerm) {
+    try {
+      const Case = require("../models/caseModel"); // Adjust path as needed
+
+      const matchingCases = await Case.find({
+        $or: [
+          { "firstParty.name.name": { $regex: searchTerm, $options: "i" } },
+          { "secondParty.name.name": { $regex: searchTerm, $options: "i" } },
+          { suitNo: { $regex: searchTerm, $options: "i" } },
+          { courtNo: { $regex: searchTerm, $options: "i" } },
+        ],
+        isDeleted: { $ne: true },
+      }).select("_id");
+
+      return matchingCases.map((caseDoc) => caseDoc._id);
+    } catch (error) {
+      console.error("Error finding cases by search:", error);
+      return []; // Return empty array if error
+    }
+  }
+
+  // Get reports for a specific case (convenience method)
+  async getReportsByCaseId(caseId, queryParams = {}) {
+    return this.paginate({ ...queryParams, caseId });
+  }
+
+  // Search reports by case name/suit number
+  async searchReportsByCase(searchTerm, queryParams = {}) {
+    return this.paginate({ ...queryParams, caseSearch: searchTerm });
+  }
+
+  // Rest of the methods remain the same...
   async advancedSearch(criteria = {}, options = {}) {
     try {
       const { page = 1, limit = 10, sort, populate } = options;
@@ -78,7 +121,6 @@ class GenericPaginationService {
       const sortOptions = QueryBuilder.buildSort(sort, this.config.defaultSort);
       const populateOptions = QueryBuilder.buildPopulate(populate);
 
-      // Sanitize criteria to prevent cast errors
       const sanitizedCriteria = QueryBuilder.sanitizeCriteria(criteria);
 
       const startIndex = (sanitizedPage - 1) * sanitizedLimit;
@@ -86,7 +128,7 @@ class GenericPaginationService {
       const [data, total] = await Promise.all([
         this.model
           .find(sanitizedCriteria)
-          .populate(populateOptions || "")
+          .populate(populateOptions || "caseReported reportedBy lawyersInCourt")
           .sort(sortOptions)
           .skip(startIndex)
           .limit(sanitizedLimit),

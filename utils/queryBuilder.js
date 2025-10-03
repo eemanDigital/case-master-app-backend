@@ -1,4 +1,4 @@
-// utils/queryBuilder.js
+// utils/queryBuilder.js - Fix for case-based filtering
 class QueryBuilder {
   static buildMongooseFilter(queryParams, modelConfig = {}) {
     const {
@@ -9,7 +9,7 @@ class QueryBuilder {
     } = modelConfig;
 
     let filter = {};
-    const { search, ...filters } = queryParams;
+    const { search, caseId, caseSearch, ...filters } = queryParams; // Added caseId and caseSearch
 
     // Text search across multiple fields
     if (search && searchableFields.length > 0) {
@@ -18,12 +18,22 @@ class QueryBuilder {
       }));
     }
 
-    // Date range filter - FIXED: Only create date filter if dates are provided
+    // CASE ID FILTER - Filter by specific case ID
+    if (caseId) {
+      filter.caseReported = caseId;
+    }
+
+    // CASE SEARCH FILTER - Search for cases and get their reports
+    if (caseSearch) {
+      // This will be handled separately in the service
+      filter.caseSearch = caseSearch; // Flag to indicate case search
+    }
+
+    // Date range filter
     const dateFilter = {};
     if (filters.startDate) dateFilter.$gte = new Date(filters.startDate);
     if (filters.endDate) dateFilter.$lte = new Date(filters.endDate);
 
-    // Only add date filter if at least one date is provided
     if (Object.keys(dateFilter).length > 0) {
       filter[dateField] = dateFilter;
     }
@@ -41,16 +51,17 @@ class QueryBuilder {
 
     // Special handling for soft deletion
     if (filters.includeDeleted === "true") {
-      // Include all records (no filter)
+      // Include all records
     } else if (filters.onlyDeleted === "true") {
       filter.isDeleted = true;
     } else {
-      filter.isDeleted = { $ne: true }; // Default: exclude soft-deleted
+      filter.isDeleted = { $ne: true };
     }
 
     return filter;
   }
 
+  // Remove the complex aggregation method - we don't need it
   static buildSort(sortQuery, defaultSort = "-createdAt") {
     if (!sortQuery) return defaultSort;
 
@@ -73,11 +84,9 @@ class QueryBuilder {
     return populateQuery.split(",").map((path) => ({ path: path.trim() }));
   }
 
-  // NEW: Safe method for advanced search criteria
   static sanitizeCriteria(criteria) {
     const sanitized = { ...criteria };
 
-    // Remove empty objects that could cause cast errors
     Object.keys(sanitized).forEach((key) => {
       if (typeof sanitized[key] === "object" && sanitized[key] !== null) {
         if (Object.keys(sanitized[key]).length === 0) {
