@@ -27,10 +27,10 @@ const serviceSchema = new Schema({
     required: [true, "Specify work done"],
     trim: true,
   },
-  hours: { type: Number, default: 0 },
+  hours: { type: Number, default: 0, min: 0 },
   date: { type: Date, default: Date.now },
-  feeRatePerHour: { type: Number, default: 0 },
-  amount: { type: Number },
+  feeRatePerHour: { type: Number, default: 0, min: 0 },
+  amount: { type: Number, default: 0, min: 0 },
 });
 
 const expenseSchema = new Schema({
@@ -43,6 +43,7 @@ const expenseSchema = new Schema({
     type: Number,
     required: [true, "Provide amount"],
     default: 0.0,
+    min: 0,
   },
   date: { type: Date, default: Date.now },
 });
@@ -61,110 +62,153 @@ const invoiceSchema = new Schema(
     expenses: [expenseSchema],
     dueDate: {
       type: Date,
+      required: [true, "Due date is required"],
       validate: {
         validator: function (v) {
-          return this.status === "paid" || v != null;
+          return v > new Date();
         },
-        message: (props) => "Due date is required when status is not paid",
+        message: "Due date must be in the future",
       },
     },
     accountDetails: accountDetailSchema,
     status: {
       type: String,
-      enum: ["paid", "unpaid", "overdue"],
-      default: "unpaid",
+      enum: ["paid", "unpaid", "overdue", "draft"],
+      default: "draft",
     },
     paymentInstructionTAndC: {
       type: String,
       maxlength: [
-        100,
-        "Payment instruction should not be more than 100 characters",
+        500, // Increased from 100 to 500 for better flexibility
+        "Payment instruction should not be more than 500 characters",
       ],
       trim: true,
     },
     taxType: String,
-    taxRate: { type: Number, default: 0.0 },
-    taxAmount: { type: Number, default: 0.0 },
-    totalAmountWithTax: { type: Number, default: 0.0 },
-    totalExpenses: { type: Number, default: 0 },
-    totalHours: { type: Number, default: 0 },
-    totalProfessionalFees: { type: Number, default: 0 },
+    taxRate: { type: Number, default: 0.0, min: 0, max: 100 },
+    taxAmount: { type: Number, default: 0.0, min: 0 },
+    totalAmountWithTax: { type: Number, default: 0.0, min: 0 },
+    totalExpenses: { type: Number, default: 0, min: 0 },
+    totalHours: { type: Number, default: 0, min: 0 },
+    totalProfessionalFees: { type: Number, default: 0, min: 0 },
     previousBalance: { type: Number, default: 0 },
-    totalAmountDue: { type: Number, default: 0 },
-    totalInvoiceAmount: { type: Number, default: 0 }, // represents the sum total of all charges related to the invoice before any deductions
-    amountPaid: { type: Number, default: 0 },
+    totalAmountDue: { type: Number, default: 0, min: 0 },
+    totalInvoiceAmount: { type: Number, default: 0, min: 0 },
+    amountPaid: { type: Number, default: 0, min: 0 },
   },
-  { timestamps: true },
-
   {
+    timestamps: true,
     toJSON: { virtuals: true },
     toObject: { virtuals: true },
   }
 );
 
+// Virtual for checking if invoice is overdue
+invoiceSchema.virtual("isOverdue").get(function () {
+  return this.status === "unpaid" && this.dueDate < new Date();
+});
+
 // Populate middleware
 invoiceSchema.pre(/^find/, function (next) {
   this.populate({
     path: "client",
-    select: "-active -dob",
+    select: "firstName secondName email phone",
   }).populate({
     path: "case",
-    select: "firstParty.name.name secondParty.name.name client",
+    select: "firstParty secondParty suitNo caseStatus",
   });
   next();
 });
 
 // Reference generator for invoiceReference
 invoiceSchema.pre("save", function (next) {
-  if (this.isNew) {
-    this.invoiceReference = "INV-" + new Date().getTime();
+  if (this.isNew && !this.invoiceReference) {
+    const timestamp = new Date().getTime();
+    const random = Math.floor(Math.random() * 1000);
+    this.invoiceReference = `INV-${timestamp}-${random}`;
   }
   next();
 });
 
-// Middleware to calculate fees and total invoice amounts
+// Middleware to calculate all financial amounts
 invoiceSchema.pre("save", function (next) {
-  let totalProfessionalFees = 0;
-  this.services.forEach((service) => {
-    if (service.hours && service.feeRatePerHour) {
+  // Calculate total professional fees from services
+  this.totalProfessionalFees = this.services.reduce((total, service) => {
+    // Calculate service amount if not already set
+    if (!service.amount && service.hours && service.feeRatePerHour) {
       service.amount = service.hours * service.feeRatePerHour;
     }
-    if (service.amount) {
-      totalProfessionalFees += service.amount;
-    }
-  });
-  this.totalProfessionalFees = totalProfessionalFees;
+    return total + (service.amount || 0);
+  }, 0);
 
-  let totalExpenses = 0;
-  this.expenses.forEach((expense) => {
-    totalExpenses += expense.amount;
-  });
-  this.totalExpenses = totalExpenses;
+  // Calculate total expenses
+  this.totalExpenses = this.expenses.reduce((total, expense) => {
+    return total + (expense.amount || 0);
+  }, 0);
 
-  // total amount
-  let totalAmount =
-    totalProfessionalFees + totalExpenses + (this.previousBalance || 0);
-  this.taxAmount = totalAmount * (this.taxRate / 100);
-  this.totalAmountWithTax = totalAmount + this.taxAmount;
+  // Calculate total hours
+  this.totalHours = this.services.reduce((total, service) => {
+    return total + (service.hours || 0);
+  }, 0);
 
-  // deduct if amount paid is provided
-  if (this.amountPaid) {
-    totalAmount -= this.amountPaid;
-  }
-  this.totalInvoiceAmount = totalAmount;
-  this.totalAmountDue = this.totalAmountWithTax;
+  // Calculate base total (professional fees + expenses + previous balance)
+  const baseTotal =
+    this.totalProfessionalFees +
+    this.totalExpenses +
+    (this.previousBalance || 0);
 
-  next();
-});
+  // Calculate tax amount
+  this.taxAmount = baseTotal * ((this.taxRate || 0) / 100);
 
-// Middleware to calculate total hours
-invoiceSchema.pre("save", function (next) {
-  this.totalHours = this.services.reduce(
-    (sum, service) => sum + service.hours,
-    0
+  // Calculate total amount with tax
+  this.totalAmountWithTax = baseTotal + this.taxAmount;
+
+  // Calculate total invoice amount (this is the gross amount before payments)
+  this.totalInvoiceAmount = this.totalAmountWithTax;
+
+  // Calculate total amount due (remaining balance after payments)
+  this.totalAmountDue = Math.max(
+    0,
+    this.totalAmountWithTax - (this.amountPaid || 0)
   );
+
+  // Auto-update status based on payments and due date
+  if (this.amountPaid >= this.totalAmountWithTax) {
+    this.status = "paid";
+  } else if (this.dueDate < new Date() && this.status !== "paid") {
+    this.status = "overdue";
+  } else if (this.status === "draft" && this.totalInvoiceAmount > 0) {
+    this.status = "unpaid";
+  }
+
   next();
 });
+
+// Index for better query performance
+invoiceSchema.index({ client: 1, status: 1 });
+invoiceSchema.index({ dueDate: 1 });
+invoiceSchema.index({ invoiceReference: 1 }, { unique: true });
+
+// Instance method to add payment
+invoiceSchema.methods.addPayment = function (paymentAmount) {
+  this.amountPaid += paymentAmount;
+
+  if (this.amountPaid >= this.totalAmountWithTax) {
+    this.status = "paid";
+  } else if (this.amountPaid > 0) {
+    this.status = "unpaid"; // Partial payment
+  }
+
+  return this.save();
+};
+
+// Static method to find overdue invoices
+invoiceSchema.statics.findOverdueInvoices = function () {
+  return this.find({
+    status: "unpaid",
+    dueDate: { $lt: new Date() },
+  });
+};
 
 const Invoice = mongoose.model("Invoice", invoiceSchema);
 

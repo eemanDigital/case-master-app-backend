@@ -70,11 +70,31 @@ const modelConfigs = {
   },
 
   User: {
-    searchableFields: ["firstName", "lastName", "email", "middleName"],
-    filterableFields: ["role", "status", "state"],
+    searchableFields: [
+      "firstName",
+      "lastName",
+      "middleName",
+      "email",
+      "phone",
+      "position",
+      "practiceArea",
+      "lawSchoolAttended",
+      "universityAttended",
+      "bio",
+    ],
+    filterableFields: [
+      "role",
+      "isActive",
+      "isLawyer",
+      "position",
+      "gender",
+      "practiceArea",
+      "includeDeleted",
+      "onlyDeleted",
+    ],
     defaultSort: "firstName",
     maxLimit: 100,
-    defaultPopulate: [],
+    defaultPopulate: [], // No default population for users
   },
 };
 
