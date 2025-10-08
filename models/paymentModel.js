@@ -52,8 +52,21 @@ const paymentSchema = new Schema(
   }
 );
 
+// In paymentModel.js - Fix the population
 paymentSchema.pre(/^find/, function (next) {
-  this.populate("invoiceId");
+  this.populate({
+    path: "invoiceId",
+    select: "invoiceReference workTitle totalAmountWithTax",
+  })
+    .populate({
+      path: "clientId",
+      select: "firstName secondName email",
+    })
+    .populate({
+      path: "caseId",
+      select: "firstParty secondParty suitNo",
+    });
   next();
 });
+
 module.exports = mongoose.model("Payment", paymentSchema);

@@ -7,97 +7,183 @@ const mongoose = require("mongoose");
 const Case = require("../models/caseModel");
 
 // Create a new payment
-exports.createPayment = catchAsync(async (req, res, next) => {
-  const {
-    caseId,
-    clientId,
-    invoiceId,
-    amountPaid,
-    method,
-    date,
-    totalAmountDue,
-  } = req.body;
+// exports.createPayment = catchAsync(async (req, res, next) => {
+//   const {
+//     caseId,
+//     clientId,
+//     invoiceId,
+//     amountPaid,
+//     method,
+//     date,
+//     totalAmountDue,
+//   } = req.body;
 
-  // Validate that all required fields are provided
-  if (
-    !clientId ||
-    !invoiceId ||
-    !amountPaid ||
-    !method ||
-    !date ||
-    !totalAmountDue
-  ) {
-    return next(new AppError("Please fill all fields", 401));
+//   // Validate that all required fields are provided
+//   if (
+//     !clientId ||
+//     !invoiceId ||
+//     !amountPaid ||
+//     !method ||
+//     !date ||
+//     !totalAmountDue
+//   ) {
+//     return next(new AppError("Please fill all fields", 401));
+//   }
+
+//   // Find the corresponding invoice
+//   const invoice = await Invoice.findById(invoiceId);
+//   if (!invoice) {
+//     return next(new AppError("No invoice found", 404));
+//   }
+
+//   console.log("INV CASEID", invoice.case.id, caseId);
+
+//   // Check if the caseId in the invoice matches the provided caseId
+//   if (invoice.case._id.toString() !== caseId) {
+//     return next(
+//       new AppError("Case does not match the case in the invoice", 400)
+//     );
+//   }
+
+//   // Find the corresponding case
+//   const caseData = await Case.findById(caseId).populate("client");
+//   if (!caseData) {
+//     return next(new AppError("No case found", 404));
+//   }
+
+//   // Check if the case has an associated client
+//   if (!caseData.client) {
+//     return next(new AppError("No client associated with this case", 400));
+//   }
+
+//   // Check if the client associated with the case is the same as the clientId provided
+//   if (caseData.client._id.toString() !== clientId) {
+//     return next(
+//       new AppError(
+//         "Client in the case does not match the provided client name",
+//         400
+//       )
+//     );
+//   }
+
+//   // Validate that amountPaid is less than or equal to totalAmountDue
+//   if (amountPaid > totalAmountDue) {
+//     return next(
+//       new AppError("Amount paid cannot be greater than total amount due", 400)
+//     );
+//   }
+
+//   // Calculate the new balance
+//   const newPayment = new Payment({
+//     invoiceId: invoiceId,
+//     caseId,
+//     clientId,
+//     amountPaid,
+//     method,
+//     date,
+//     totalAmountDue,
+//     balance: totalAmountDue - amountPaid,
+//   });
+
+//   // Save the payment
+//   await newPayment.save();
+
+//   // Update the invoice status if fully paid
+//   if (newPayment.balance <= 0) {
+//     invoice.status = "paid";
+//   }
+
+//   await invoice.save();
+
+//   res.status(201).json({
+//     message: "success",
+//     data: newPayment,
+//   });
+// });
+
+// Remove the separate Payment model and use this controller instead:
+exports.createPayment = catchAsync(async (req, res, next) => {
+  const { invoiceId, amount, method, reference, notes, clientId, caseId } =
+    req.body;
+
+  // Validate required fields
+  if (!invoiceId || !amount || !method) {
+    return next(
+      new AppError("Invoice ID, amount, and payment method are required", 400)
+    );
   }
 
-  // Find the corresponding invoice
-  const invoice = await Invoice.findById(invoiceId);
+  // Find invoice with case and client populated
+  const invoice = await Invoice.findById(invoiceId)
+    .populate("case")
+    .populate("client");
+
   if (!invoice) {
     return next(new AppError("No invoice found", 404));
   }
 
-  console.log("INV CASEID", invoice.case.id, caseId);
-
-  // Check if the caseId in the invoice matches the provided caseId
-  if (invoice.case._id.toString() !== caseId) {
-    return next(
-      new AppError("Case does not match the case in the invoice", 400)
-    );
+  // Validate relationships if IDs are provided
+  if (caseId && invoice.case && invoice.case._id.toString() !== caseId) {
+    return next(new AppError("Case does not match the invoice case", 400));
   }
 
-  // Find the corresponding case
-  const caseData = await Case.findById(caseId).populate("client");
-  if (!caseData) {
-    return next(new AppError("No case found", 404));
+  if (
+    clientId &&
+    invoice.client &&
+    invoice.client._id.toString() !== clientId
+  ) {
+    return next(new AppError("Client does not match the invoice client", 400));
   }
 
-  // Check if the case has an associated client
-  if (!caseData.client) {
-    return next(new AppError("No client associated with this case", 400));
+  // Validate amount
+  if (amount <= 0) {
+    return next(new AppError("Payment amount must be greater than zero", 400));
   }
 
-  // Check if the client associated with the case is the same as the clientId provided
-  if (caseData.client._id.toString() !== clientId) {
+  // Check for overpayment
+  const totalPaid = invoice.payments.reduce(
+    (sum, payment) => sum + payment.amount,
+    0
+  );
+  const remainingBalance = invoice.totalAmountWithTax - totalPaid;
+
+  if (amount > remainingBalance) {
     return next(
       new AppError(
-        "Client in the case does not match the provided client name",
+        `Payment amount (${amount}) exceeds remaining balance (${remainingBalance})`,
         400
       )
     );
   }
 
-  // Validate that amountPaid is less than or equal to totalAmountDue
-  if (amountPaid > totalAmountDue) {
-    return next(
-      new AppError("Amount paid cannot be greater than total amount due", 400)
-    );
-  }
-
-  // Calculate the new balance
-  const newPayment = new Payment({
-    invoiceId: invoiceId,
-    caseId,
-    clientId,
-    amountPaid,
-    method,
-    date,
-    totalAmountDue,
-    balance: totalAmountDue - amountPaid,
+  // Add payment manually
+  invoice.payments.push({
+    amount,
+    paymentDate: new Date(),
+    paymentMethod: method,
+    reference: reference || "",
+    notes: notes || "",
   });
 
-  // Save the payment
-  await newPayment.save();
+  // Recalculate invoice status
+  const newTotalPaid = totalPaid + amount;
 
-  // Update the invoice status if fully paid
-  if (newPayment.balance <= 0) {
+  if (newTotalPaid >= invoice.totalAmountWithTax) {
     invoice.status = "paid";
+  } else if (newTotalPaid > 0) {
+    // Check if overdue
+    if (invoice.dueDate < new Date() && invoice.issuedDate !== null) {
+      invoice.status = "overdue";
+    } else {
+      invoice.status = "partially_paid";
+    }
   }
 
   await invoice.save();
 
   res.status(201).json({
-    message: "success",
-    data: newPayment,
+    message: "Payment added successfully",
+    data: invoice,
   });
 });
 
