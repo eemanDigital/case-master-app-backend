@@ -96,6 +96,40 @@ const modelConfigs = {
     maxLimit: 100,
     defaultPopulate: [], // No default population for users
   },
+
+  DocumentRecord: {
+    searchableFields: [
+      "documentName",
+      "documentType",
+      "docRef",
+      "sender",
+      "note",
+    ],
+    filterableFields: [
+      "documentType",
+      "sender",
+      "recipient",
+      "forwardedTo",
+      "dateReceived",
+      "startDate",
+      "endDate",
+      "includeDeleted",
+      "onlyDeleted",
+    ],
+    defaultSort: "-dateReceived",
+    dateField: "dateReceived",
+    maxLimit: 50,
+    defaultPopulate: [
+      {
+        path: "recipient",
+        select: "firstName lastName email",
+      },
+      {
+        path: "forwardedTo",
+        select: "firstName lastName email",
+      },
+    ],
+  },
 };
 
 module.exports = modelConfigs;
