@@ -43,8 +43,21 @@ exports.addDocumentRecord = catchAsync(async (req, res) => {
 });
 
 // get all document records with pagination, filtering, and sorting
+// get all document records with pagination, filtering, and sorting
 exports.getAllDocumentRecords = catchAsync(async (req, res) => {
+  console.log("Query params:", req.query);
+  console.log("Date filter being applied:", {
+    startDate: req.query.startDate,
+    endDate: req.query.endDate,
+    dateField: "dateReceived",
+  });
+
   const result = await documentRecordService.paginate(req.query);
+
+  console.log("Filter result:", {
+    total: result.pagination?.totalRecords,
+    dataCount: result.data?.length,
+  });
 
   res.status(200).json({
     status: "success",
