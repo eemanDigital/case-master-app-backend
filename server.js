@@ -341,8 +341,8 @@ if (!DB) {
 const connectWithRetry = async (retries = 5, delay = 5000) => {
   try {
     await mongoose.connect(DB, {
-      serverSelectionTimeoutMS: 30000,
-      connectTimeoutMS: 30000,
+      serverSelectionTimeoutMS: 60000, //
+      connectTimeoutMS: 60000,
       socketTimeoutMS: 45000,
       maxPoolSize: 50,
       retryWrites: true,
