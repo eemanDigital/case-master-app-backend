@@ -283,7 +283,7 @@ exports.login = catchAsync(async (req, res, next) => {
     await new Token({
       userId: user._id,
       loginToken: encryptedLoginCode,
-      createdAt: Date.now(),
+      createAt: Date.now(),
       expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes
     }).save();
 
@@ -353,7 +353,7 @@ exports.sendLoginCode = catchAsync(async (req, res, next) => {
   await new Token({
     userId: user._id,
     loginToken: encryptedLoginCode,
-    createdAt: Date.now(),
+    createAt: Date.now(),
     expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes
   }).save();
 
