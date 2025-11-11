@@ -1,4 +1,4 @@
-const dotenv = require("dotenv");
+const dotenv = require("dotenv").config({ path: "./config.env" });
 const express = require("express");
 const mongoose = require("mongoose");
 const path = require("path");
@@ -98,9 +98,6 @@ process.on("SIGINT", () => {
 // ============================================
 // EXPRESS APP SETUP
 // ============================================
-
-// Configure environment variables FIRST
-dotenv.config({ path: "./config.env" });
 
 // Initialize Express app
 const app = express();
