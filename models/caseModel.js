@@ -5,8 +5,7 @@ const nameSchema = new mongoose.Schema({
   name: {
     type: String,
     trim: true,
-    minlength: [2, "field should be at least 2 characters long"],
-    maxlength: [200, "field should be less than 100 characters long"],
+    maxlength: [1000, "field should be less than 100 characters long"],
   },
 });
 
