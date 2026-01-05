@@ -187,8 +187,8 @@ exports.updateInvoice = catchAsync(async (req, res, next) => {
   const { case: caseId, client: clientId, ...updateData } = req.body;
 
   // Find existing invoice
-  const existingInvoice = await Invoice.findById(req.params.id);
-  if (!existingInvoice) {
+  const invoice = await Invoice.findById(req.params.id);
+  if (!invoice) {
     return next(new AppError("No invoice found with that ID", 404));
   }
 
@@ -212,6 +212,8 @@ exports.updateInvoice = catchAsync(async (req, res, next) => {
         )
       );
     }
+
+    invoice.case = caseId;
   }
 
   // Validate client exists if changing
@@ -220,26 +222,104 @@ exports.updateInvoice = catchAsync(async (req, res, next) => {
     if (!clientData) {
       return next(new AppError("No client found with that ID", 404));
     }
+    invoice.client = clientId;
   }
 
-  const invoice = await Invoice.findByIdAndUpdate(
-    req.params.id,
-    {
-      ...updateData,
-      ...(caseId && { case: caseId }),
-      ...(clientId && { client: clientId }),
-    },
-    {
-      new: true,
-      runValidators: true,
+  // Update other fields manually
+  const fieldsToUpdate = [
+    "title",
+    "description",
+    "billingPeriodStart",
+    "billingPeriodEnd",
+    "services",
+    "expenses",
+    "dueDate",
+    "discount",
+    "discountType",
+    "discountReason",
+    "taxRate",
+    "paymentTerms",
+    "notes",
+    "previousBalance",
+    "internalNotes",
+    "matterReference",
+    "timekeeper",
+    "billingAttorney",
+  ];
+
+  fieldsToUpdate.forEach((field) => {
+    if (updateData[field] !== undefined) {
+      invoice[field] = updateData[field];
     }
-  )
-    .populate("client", "firstName lastName email phone")
-    .populate("case", "firstParty secondParty suitNo");
+  });
+
+  // Handle services updates - ensure they have proper structure
+  if (updateData.services) {
+    invoice.services = updateData.services.map((service) => ({
+      description: service.description || "",
+      billingMethod: service.billingMethod || "hourly",
+      hours: service.hours || 0,
+      rate: service.rate || 0,
+      fixedAmount: service.fixedAmount || 0,
+      quantity: service.quantity || 1,
+      unitPrice: service.unitPrice || 0,
+      date: service.date || new Date(),
+      category: service.category || "other",
+      // amount will be calculated by pre-save middleware
+    }));
+  }
+
+  // Handle expenses updates
+  if (updateData.expenses) {
+    invoice.expenses = updateData.expenses.map((expense) => ({
+      description: expense.description || "",
+      amount: expense.amount || 0,
+      date: expense.date || new Date(),
+      category: expense.category || "other",
+      receiptNumber: expense.receiptNumber || "",
+      isReimbursable:
+        expense.isReimbursable !== undefined ? expense.isReimbursable : true,
+    }));
+  }
+
+  // IMPORTANT: If status is being updated to 'sent' and invoice is draft, set issueDate
+  if (updateData.status === "sent" && invoice.status === "draft") {
+    invoice.issueDate = new Date();
+  }
+
+  // Validate that we can't change status from paid/cancelled/void without special handling
+  if (updateData.status) {
+    const prohibitedTransitions = {
+      paid: ["draft", "sent", "overdue"],
+      cancelled: ["draft", "sent", "overdue", "partially_paid", "paid"],
+      void: ["draft", "sent", "overdue", "partially_paid", "paid"],
+    };
+
+    if (prohibitedTransitions[invoice.status]?.includes(updateData.status)) {
+      return next(
+        new AppError(
+          `Cannot change status from ${invoice.status} to ${updateData.status}`,
+          400
+        )
+      );
+    }
+
+    invoice.status = updateData.status;
+  }
+
+  // SAVE the invoice to trigger pre-save middleware
+  await invoice.save();
+
+  // Populate the saved invoice
+  const updatedInvoice = await Invoice.findById(invoice._id)
+    .populate("client", "firstName lastName email phone address")
+    .populate("case", "firstParty secondParty suitNo caseStatus")
+    .populate("timekeeper", "firstName lastName email")
+    .populate("billingAttorney", "firstName lastName email");
 
   res.status(200).json({
     message: "success",
-    data: invoice,
+    data: updatedInvoice,
   });
 });
 
