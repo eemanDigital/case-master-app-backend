@@ -1,4 +1,5 @@
 const dotenv = require("dotenv");
+const mongoose = require("mongoose");
 const crypto = require("crypto");
 const Cryptr = require("cryptr");
 const AppError = require("../utils/appError");
@@ -7,6 +8,8 @@ const { promisify } = require("util");
 const catchAsync = require("../utils/catchAsync");
 const jwt = require("jsonwebtoken");
 const User = require("../models/userModel");
+const Firm = require("../models/firmModel");
+
 const { createSendToken, hashToken } = require("../utils/handleSendToken");
 const Token = require("../models/tokenModel");
 const sendMail = require("../utils/email");
@@ -18,6 +21,192 @@ const cryptr = new Cryptr(process.env.CRYPTR_SECRET_KEY);
 
 // create new instance of google oauth2
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+/**
+ * ===============================
+ * FIRM REGISTRATION (NEW)
+ * ===============================
+ *
+ * Register a new law firm with admin user
+ * This creates both the Firm and the admin User in a transaction
+ */
+exports.registerFirm = catchAsync(async (req, res, next) => {
+  const {
+    // Firm details
+    firmName,
+    subdomain,
+    phone,
+    address,
+    state,
+    city,
+    rcNumber,
+
+    // Admin user details
+    firstName,
+    lastName,
+    email,
+    password,
+    passwordConfirm,
+  } = req.body;
+
+  // 1) Validate required fields
+  if (!firmName || !firstName || !lastName || !email || !password) {
+    return next(new AppError("Please provide all required fields", 400));
+  }
+
+  // 2) Validate password
+  if (password.length < 8) {
+    return next(new AppError("Password must be at least 8 characters", 400));
+  }
+
+  if (password !== passwordConfirm) {
+    return next(
+      new AppError("Password and passwordConfirm must be the same", 400)
+    );
+  }
+
+  // 3) Validate subdomain format (if provided)
+  if (subdomain && !/^[a-z0-9-]+$/.test(subdomain)) {
+    return next(
+      new AppError(
+        "Subdomain can only contain lowercase letters, numbers, and hyphens",
+        400
+      )
+    );
+  }
+
+  // 4) Check if subdomain already exists (if provided)
+  if (subdomain) {
+    const existingFirm = await Firm.findOne({ subdomain });
+    if (existingFirm) {
+      return next(new AppError("This subdomain is already taken", 400));
+    }
+  }
+
+  // 5) Start MongoDB transaction
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    // 6) Create Firm
+    const firmData = {
+      name: firmName,
+      subdomain: subdomain || null,
+      contact: {
+        phone,
+        email,
+        rcNumber,
+        address: {
+          street: address,
+          city,
+          state,
+        },
+      },
+      subscription: {
+        plan: "FREE",
+        status: "TRIAL",
+      },
+    };
+
+    const newFirm = await Firm.create([firmData], { session });
+    const firmId = newFirm[0]._id;
+
+    // 7) Get user agent
+    const ua = parser(req.headers["user-agent"]);
+    const userAgent = [ua.ua];
+
+    // 8) Create Admin User
+    const userData = {
+      firmId,
+      firstName,
+      lastName,
+      email: email.toLowerCase(),
+      password,
+      passwordConfirm,
+      role: "admin", // First user is always admin
+      address: address || "Not provided",
+      phone: phone || "+234",
+      gender: req.body.gender || "male",
+      isVerified: false,
+      isLawyer: req.body.isLawyer || false,
+      userAgent,
+    };
+
+    const newUser = await User.create([userData], { session });
+
+    // 9) Commit transaction
+    await session.commitTransaction();
+
+    // 10) Send verification email
+    try {
+      const vToken = crypto.randomBytes(32).toString("hex") + newUser[0]._id;
+      const hashedToken = hashToken(vToken);
+
+      await new Token({
+        userId: newUser[0]._id,
+        verificationToken: hashedToken,
+        createAt: Date.now(),
+        expiresAt: Date.now() + 24 * 60 * 60 * 1000, // 24 hours
+      }).save();
+
+      const verificationURL = `${process.env.FRONTEND_URL}/verify-account/${vToken}`;
+
+      const subject = "Verify Your Account - CaseMaster";
+      const send_to = email;
+      const send_from = process.env.SENDINBLUE_EMAIL;
+      const reply_to = "noreply@casemaster.ng";
+      const template = "verifyEmail";
+      const context = {
+        name: firstName,
+        firmName,
+        link: verificationURL,
+        companyName: "CaseMaster",
+      };
+
+      await sendMail(subject, send_to, send_from, reply_to, template, context);
+    } catch (emailError) {
+      console.error("Failed to send verification email:", emailError);
+      // Don't fail registration if email fails
+    }
+
+    // 11) Send success response
+    res.status(201).json({
+      status: "success",
+      message:
+        "Firm registered successfully. Please check your email to verify your account.",
+      data: {
+        firm: {
+          id: newFirm[0]._id,
+          name: newFirm[0].name,
+          subdomain: newFirm[0].subdomain,
+          subscription: newFirm[0].subscription,
+        },
+        user: {
+          id: newUser[0]._id,
+          firstName: newUser[0].firstName,
+          lastName: newUser[0].lastName,
+          email: newUser[0].email,
+          role: newUser[0].role,
+        },
+      },
+    });
+  } catch (error) {
+    // Rollback transaction on error
+    await session.abortTransaction();
+
+    if (error.code === 11000) {
+      // Duplicate key error
+      if (error.keyPattern.email) {
+        return next(new AppError("Email already exists in this firm", 400));
+      }
+      return next(new AppError("Duplicate field value entered", 400));
+    }
+
+    throw error;
+  } finally {
+    session.endSession();
+  }
+});
 
 // function to implement user signup
 exports.register = catchAsync(async (req, res, next) => {
@@ -152,277 +341,6 @@ exports.login = catchAsync(async (req, res, next) => {
   // 5) Send token to client
   createSendToken(user, 200, res);
 });
-
-// // send login code handler
-// exports.sendLoginCode = catchAsync(async (req, res, next) => {
-//   const { email } = req.params;
-//   const user = await User.findOne({ email });
-
-//   if (!user) {
-//     return next(new AppError("There is no user with email address.", 404));
-//   }
-
-//   let userToken = await Token.findOne({
-//     userId: user._id,
-//     expiresAt: { $gt: Date.now() },
-//   });
-
-//   if (!userToken) {
-//     return next(new AppError("Invalid or expired token. Please re-login", 404));
-//   }
-
-//   const loginCode = userToken.loginToken;
-//   if (!loginCode) {
-//     return next(new AppError("Login code is missing or invalid.", 400));
-//   }
-
-//   let decryptedLoginCode;
-//   try {
-//     decryptedLoginCode = cryptr.decrypt(loginCode);
-//   } catch (error) {
-//     return next(new AppError("Failed to decrypt login code.", 400));
-//   }
-
-//   const subject = "Login Access Code - CaseMaster";
-//   const send_to = email;
-//   const send_from = process.env.SENDINBLUE_EMAIL;
-//   const reply_to = "noreply@gmail.com";
-//   const template = "loginCode";
-//   const context = { name: user.firstName, link: decryptedLoginCode };
-
-//   try {
-//     await sendMail(subject, send_to, send_from, reply_to, template, context);
-//     res.status(200).json({ message: `Access Code sent to your ${email}` });
-//   } catch (error) {
-//     return next(new AppError("Email sending failed", 400));
-//   }
-// });
-// // 2fa
-// exports.loginWithCode = catchAsync(async (req, res, next) => {
-//   const { email } = req.params;
-//   const { loginCode } = req.body;
-
-//   const user = await User.findOne({ email });
-//   // if user not found
-//   if (!user) {
-//     return next(new AppError("User not found.", 404));
-//   }
-
-//   // find login code
-//   // find login code for user
-//   let userToken = await Token.findOne({
-//     userId: user._id,
-//     expiresAt: { $gt: Date.now() },
-//   });
-//   if (!userToken) {
-//     return next(new AppError("Invalid or expired token", 404));
-//   }
-
-//   const decryptedLoginCode = cryptr.decrypt(userToken.loginToken);
-//   // if login code entered by user is not the same as token in db
-//   // console.log(loginCode, decryptedLoginCode);
-//   if (loginCode !== decryptedLoginCode) {
-//     return next(new AppError("Incorrect access code, please try again", 404));
-//   } else {
-//     // register user agent
-//     const ua = parser(req.headers["user-agent"]); // Get user-agent header
-//     const currentUserAgent = ua.ua;
-//     // add new user agent to the list of existing agents
-//     user.userAgent.push(currentUserAgent);
-//     await user.save({ validateBeforeSave: false });
-
-//     // 4) If everything is ok, login user
-//     createSendToken(user, 200, res);
-//   }
-// });
-
-// Fixed login function
-// exports.login = catchAsync(async (req, res, next) => {
-//   const { email, password } = req.body;
-
-//   if (!email || !password) {
-//     return next(new AppError("Please provide email and password!", 400));
-//   }
-
-//   const user = await User.findOne({ email }).select("+password");
-//   if (!user) {
-//     return next(new AppError("Incorrect email or password", 401));
-//   }
-
-//   if (user.isDeleted === true) {
-//     return next(
-//       new AppError("This account has been deleted and cannot log in")
-//     );
-//   }
-
-//   if (user.isActive === false && user.role !== "client") {
-//     return next(
-//       new AppError("You are no longer eligible to login to this account")
-//     );
-//   }
-
-//   const isPasswordCorrect = await user.correctPassword(password, user.password);
-//   if (!isPasswordCorrect) {
-//     return next(new AppError("Incorrect email or password", 401));
-//   }
-
-//   const currentUserAgent = parser(req.headers["user-agent"]).ua;
-//   const isAllowedAgent = user.userAgent.includes(currentUserAgent);
-
-//   if (!isAllowedAgent) {
-//     // Generate and send login code in one operation
-//     const loginCode = Math.floor(100000 + Math.random() * 900000).toString();
-//     console.log("🔐 Generated Login Code:", loginCode);
-
-//     const encryptedLoginCode = cryptr.encrypt(loginCode);
-
-//     // Delete existing tokens
-//     await Token.deleteMany({ userId: user._id });
-
-//     // Save new token
-//     await new Token({
-//       userId: user._id,
-//       loginToken: encryptedLoginCode,
-//       createAt: Date.now(),
-//       expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes
-//     }).save();
-
-//     // ✅ FIXED: Send email immediately
-//     try {
-//       const subject = "Your Login Verification Code - CaseMaster";
-//       const send_to = user.email;
-//       const send_from =
-//         process.env.SENDINBLUE_EMAIL || process.env.EMAIL_USERNAME;
-//       const reply_to = "noreply@casemaster.com";
-//       const template = "loginCode";
-//       const context = {
-//         name: user.firstName,
-//         code: loginCode, // Send plain code for email
-//         expiresIn: "10 minutes",
-//       };
-
-//       await sendMail(subject, send_to, send_from, reply_to, template, context);
-
-//       return res.status(200).json({
-//         status: "2fa_required",
-//         message: "Verification code sent to your email",
-//         email: user.email, // Include email for frontend
-//       });
-//     } catch (emailError) {
-//       console.error("❌ Failed to send verification email:", emailError);
-
-//       // Delete the token since email failed
-//       await Token.deleteMany({ userId: user._id });
-
-//       return next(
-//         new AppError(
-//           "Failed to send verification code. Please try again later.",
-//           500
-//         )
-//       );
-//     }
-//   }
-
-//   // If known device, login directly
-//   createSendToken(user, 200, res);
-// });
-
-// Fixed login function
-// exports.login = catchAsync(async (req, res, next) => {
-//   const { email, password } = req.body;
-
-//   if (!email || !password) {
-//     return next(new AppError("Please provide email and password!", 400));
-//   }
-
-//   const user = await User.findOne({ email }).select("+password");
-//   if (!user) {
-//     return next(new AppError("Incorrect email or password", 401));
-//   }
-
-//   if (user.isDeleted === true) {
-//     return next(
-//       new AppError("This account has been deleted and cannot log in")
-//     );
-//   }
-
-//   if (user.isActive === false && user.role !== "client") {
-//     return next(
-//       new AppError("You are no longer eligible to login to this account")
-//     );
-//   }
-
-//   const isPasswordCorrect = await user.correctPassword(password, user.password);
-//   if (!isPasswordCorrect) {
-//     return next(new AppError("Incorrect email or password", 401));
-//   }
-
-//   const currentUserAgent = parser(req.headers["user-agent"]).ua;
-//   const isAllowedAgent = user.userAgent.includes(currentUserAgent);
-
-//   if (!isAllowedAgent) {
-//     // Generate and send login code in one operation
-//     const loginCode = Math.floor(100000 + Math.random() * 900000).toString();
-//     console.log("🔐 Generated Login Code:", loginCode);
-
-//     const encryptedLoginCode = cryptr.encrypt(loginCode);
-
-//     // Delete existing tokens
-//     await Token.deleteMany({ userId: user._id });
-
-//     // Save new token
-//     await new Token({
-//       userId: user._id,
-//       loginToken: encryptedLoginCode,
-//       createAt: Date.now(),
-//       expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes
-//     }).save();
-
-//     // ✅ FIXED: Send email immediately
-//     try {
-//       const subject = "Your Login Verification Code - CaseMaster";
-//       const send_to = user.email;
-//       const send_from =
-//         process.env.SENDINBLUE_EMAIL || process.env.EMAIL_USERNAME;
-//       const reply_to = "noreply@casemaster.com";
-//       const template = "loginCode";
-//       const context = {
-//         name: user.firstName,
-//         code: loginCode, // Send plain code for email
-//         expiresIn: "10 minutes",
-//       };
-
-//       await sendMail(subject, send_to, send_from, reply_to, template, context);
-
-//       // ✅ FIXED: Use next() with AppError to trigger 2FA flow in frontend
-//       return next(
-//         new AppError(
-//           "New device detected. Verification code sent to your email.",
-//           400,
-//           {
-//             twoFactor: true,
-//             email: user.email,
-//           }
-//         )
-//       );
-//     } catch (emailError) {
-//       console.error("❌ Failed to send verification email:", emailError);
-
-//       // Delete the token since email failed
-//       await Token.deleteMany({ userId: user._id });
-
-//       return next(
-//         new AppError(
-//           "Failed to send verification code. Please try again later.",
-//           500
-//         )
-//       );
-//     }
-//   }
-
-//   // If known device, login directly
-//   createSendToken(user, 200, res);
-// });
 
 // Fixed sendLoginCode function
 exports.sendLoginCode = catchAsync(async (req, res, next) => {
@@ -603,6 +521,22 @@ exports.protect = catchAsync(async (req, res, next) => {
     return next(
       new AppError("User recently changed password! Please log in again.", 401)
     );
+  }
+  // 6) Attach firmId and firm to req if applicable
+  if (currentUser.firmId) {
+    const Firm = require("../models/firmModel");
+    const firm = await Firm.findById(currentUser.firmId);
+
+    if (!firm || !firm.isActive) {
+      return next(new AppError("Your firm account is not accessible.", 403));
+    }
+
+    if (!firm.isSubscriptionActive()) {
+      return next(new AppError("Your firm's subscription has expired.", 402));
+    }
+
+    req.firmId = currentUser.firmId;
+    req.firm = firm;
   }
 
   // GRANT ACCESS TO PROTECTED ROUTE
@@ -892,4 +826,76 @@ exports.loginWithGoogle = catchAsync(async (req, res, next) => {
   }
 
   createSendToken(user, 200, res);
+});
+
+// controllers/authController.js
+
+// Add at the end of the file:
+
+exports.checkUserLimit = catchAsync(async (req, res, next) => {
+  const Firm = require("../models/firmModel");
+  const firm = await Firm.findById(req.firmId);
+
+  if (!firm) {
+    return next(new AppError("Firm not found", 404));
+  }
+
+  const currentUserCount = await User.countDocuments({
+    firmId: req.firmId,
+    isActive: true,
+    isDeleted: false,
+  });
+
+  if (!firm.canAddUser(currentUserCount)) {
+    return next(
+      new AppError(
+        `Your firm has reached the maximum number of users (${firm.limits.users}). Please upgrade your plan.`,
+        403
+      )
+    );
+  }
+
+  next();
+});
+
+exports.checkCaseLimit = catchAsync(async (req, res, next) => {
+  const Firm = require("../models/firmModel");
+  const firm = await Firm.findById(req.firmId);
+
+  if (!firm) {
+    return next(new AppError("Firm not found", 404));
+  }
+
+  if (!firm.canCreateCase()) {
+    return next(
+      new AppError(
+        `Your firm has reached the monthly case limit (${firm.limits.casesPerMonth}). Please upgrade your plan.`,
+        403
+      )
+    );
+  }
+
+  next();
+});
+
+exports.checkStorageLimit = catchAsync(async (req, res, next) => {
+  const Firm = require("../models/firmModel");
+  const firm = await Firm.findById(req.firmId);
+
+  if (!firm) {
+    return next(new AppError("Firm not found", 404));
+  }
+
+  const fileSizeGB = req.file ? req.file.size / (1024 * 1024 * 1024) : 0;
+
+  if (!firm.hasStorageAvailable(fileSizeGB)) {
+    return next(
+      new AppError(
+        `Your firm has reached the storage limit (${firm.limits.storageGB}GB). Please upgrade your plan.`,
+        403
+      )
+    );
+  }
+
+  next();
 });
