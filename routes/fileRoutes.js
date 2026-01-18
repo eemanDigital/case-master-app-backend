@@ -3,11 +3,11 @@ const fileController = require("../controllers/fileController");
 const authController = require("../controllers/authController");
 
 const router = express.Router();
-// Check storage limit middleware
-router.use(authController.checkStorageLimit);
 
 // Protect all routes (require authentication)
 router.use(authController.protect);
+// Check storage limit middleware
+router.use(authController.checkStorageLimit);
 
 // Upload routes
 router

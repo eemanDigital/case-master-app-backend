@@ -38,6 +38,7 @@ const {
   loginWithCode,
   loginWithGoogle,
   checkUserLimit,
+  updateFirmUserCount,
 } = require("../controllers/authController");
 
 const {
@@ -82,6 +83,7 @@ router.post(
   "/register",
   restrictTo("admin", "super-admin"),
   checkUserLimit,
+  updateFirmUserCount,
   uploadUserPhoto,
   resizeUserPhoto,
   register
@@ -207,7 +209,9 @@ router.patch(
 router.delete(
   "/soft-delete/:id",
   restrictTo("admin", "super-admin"),
-  softDeleteItem({ model: User, modelName: "User" })
+  updateFirmUserCount,
+  softDeleteItem({ model: User, modelName: "User" }),
+  updateFirmUserCount
 );
 
 module.exports = router;
