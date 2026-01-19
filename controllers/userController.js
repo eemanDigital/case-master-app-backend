@@ -6,6 +6,7 @@ const AppError = require("../utils/appError");
 const filterObj = require("../utils/filterObj");
 const sendMail = require("../utils/email");
 const PaginationServiceFactory = require("../services/PaginationServiceFactory");
+const Firm = require("../models/firmModel");
 
 // Create pagination service for User model
 const userPagination = PaginationServiceFactory.createService(User);
@@ -59,7 +60,7 @@ exports.getUsers = catchAsync(async (req, res, next) => {
       ...req.query,
       includeStats: "true",
     },
-    customFilter
+    customFilter,
   );
 
   if (debug) {
@@ -109,7 +110,7 @@ exports.getUsersByRole = catchAsync(async (req, res, next) => {
 
   const result = await userPagination.paginate(
     { ...req.query, includeStats: "true" },
-    customFilter
+    customFilter,
   );
 
   res.status(200).json({
@@ -168,7 +169,7 @@ exports.getStaffByStatus = catchAsync(async (req, res, next) => {
   if (debug) {
     console.log(
       `🔍 [getStaffByStatus] Filtering ${status} staff:`,
-      customFilter
+      customFilter,
     );
   }
 
@@ -179,7 +180,7 @@ exports.getStaffByStatus = catchAsync(async (req, res, next) => {
       // Ensure we don't override the status filter
       ...(req.query.isActive && delete req.query.isActive),
     },
-    customFilter
+    customFilter,
   );
 
   res.status(200).json({
@@ -237,7 +238,7 @@ exports.getClientsByStatus = catchAsync(async (req, res, next) => {
   if (debug) {
     console.log(
       `🔍 [getClientsByStatus] Filtering ${status} clients:`,
-      customFilter
+      customFilter,
     );
   }
 
@@ -248,7 +249,7 @@ exports.getClientsByStatus = catchAsync(async (req, res, next) => {
       // Ensure we don't override the status filter
       ...(req.query.isActive && delete req.query.isActive),
     },
-    customFilter
+    customFilter,
   );
 
   res.status(200).json({
@@ -315,7 +316,7 @@ exports.getAllUsersByStatus = catchAsync(async (req, res, next) => {
   if (debug) {
     console.log(
       `🔍 [getAllUsersByStatus] Filtering ${status} users:`,
-      customFilter
+      customFilter,
     );
   }
 
@@ -326,7 +327,7 @@ exports.getAllUsersByStatus = catchAsync(async (req, res, next) => {
       // Ensure we don't override the status filter
       ...(req.query.isActive && delete req.query.isActive),
     },
-    customFilter
+    customFilter,
   );
 
   // Enhanced statistics with breakdown
@@ -463,7 +464,7 @@ exports.getStatusStatistics = catchAsync(async (req, res, next) => {
             ? Math.round(
                 ((activeStaffCount + activeClientCount) /
                   (totalStaffCount + totalClientCount)) *
-                  100
+                  100,
               )
             : 0,
       },
@@ -508,7 +509,7 @@ exports.getUsersByStatus = catchAsync(async (req, res, next) => {
 
   const result = await userPagination.paginate(
     { ...req.query, includeStats: "true" },
-    customFilter
+    customFilter,
   );
 
   res.status(200).json({
@@ -531,7 +532,7 @@ exports.getActiveUsers = catchAsync(async (req, res, next) => {
 
   const result = await userPagination.paginate(
     { ...req.query, includeStats: "true" },
-    customFilter
+    customFilter,
   );
 
   res.status(200).json({
@@ -553,7 +554,7 @@ exports.getUserStatistics = catchAsync(async (req, res, next) => {
       limit: 1,
       includeStats: "true",
     },
-    { firm: req.firmId }
+    { firm: req.firmId },
   );
 
   res.status(200).json({
@@ -579,7 +580,7 @@ exports.getStaffStatistics = catchAsync(async (req, res, next) => {
       limit: 1,
       includeStats: "true",
     },
-    customFilter
+    customFilter,
   );
 
   res.status(200).json({
@@ -604,7 +605,7 @@ exports.getClientStatistics = catchAsync(async (req, res, next) => {
       limit: 1,
       includeStats: "true",
     },
-    customFilter
+    customFilter,
   );
 
   res.status(200).json({
@@ -626,6 +627,10 @@ exports.getUser = catchAsync(async (req, res, next) => {
     .populate({
       path: "task",
       select: "-assignedTo",
+    })
+    .populate({
+      path: "firmId",
+      select: "name address contact.email logo",
     })
     .lean();
 
@@ -679,8 +684,8 @@ exports.updateUser = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         "This route is not for password updates. Please use /updateMyPassword.",
-        400
-      )
+        400,
+      ),
     );
   }
 
@@ -700,7 +705,7 @@ exports.updateUser = catchAsync(async (req, res, next) => {
     "practiceArea",
     "universityAttended",
     "lawSchoolAttended",
-    "isActive"
+    "isActive",
   );
 
   if (req.file) filteredBody.photo = req.file.cloudinaryUrl;
@@ -711,7 +716,7 @@ exports.updateUser = catchAsync(async (req, res, next) => {
       firmId: req.firmId,
     },
     filteredBody,
-    { new: true, runValidators: true }
+    { new: true, runValidators: true },
   );
 
   if (!updatedUser) {
@@ -754,7 +759,7 @@ exports.upgradeUser = catchAsync(async (req, res, next) => {
   } else {
     if (role || position) {
       return next(
-        new AppError("Clients can only have their active status updated.", 400)
+        new AppError("Clients can only have their active status updated.", 400),
       );
     }
     user.isActive = isActive;
@@ -922,6 +927,7 @@ const sanitizeForEmail = (maybeEncodedHtml) => {
  */
 exports.sendAutomatedCustomEmail = catchAsync(async (req, res, next) => {
   const { send_to, reply_to, template, subject, url, context } = req.body;
+  const firm = await Firm.findById(req.firmId);
 
   if (!send_to || !reply_to || !template || !subject) {
     return next(new AppError("Missing email fields", 400));
@@ -934,7 +940,7 @@ exports.sendAutomatedCustomEmail = catchAsync(async (req, res, next) => {
     ...context,
     link: `${process.env.FRONTEND_URL}/${url}`,
     year: new Date().getFullYear(),
-    companyName: process.env.COMPANY_NAME || "A.T Lukman & Co",
+    companyName: firm.name,
   };
 
   if (template === "caseReport" && baseContext.update) {
@@ -956,7 +962,7 @@ exports.sendAutomatedCustomEmail = catchAsync(async (req, res, next) => {
       if (!user) {
         throw new AppError(
           `No active user found with email: ${recipientEmail}`,
-          404
+          404,
         );
       }
       fullContext.name = user.firstName;
@@ -970,7 +976,7 @@ exports.sendAutomatedCustomEmail = catchAsync(async (req, res, next) => {
       send_from,
       reply_to,
       template,
-      fullContext
+      fullContext,
     );
   };
 
@@ -1033,7 +1039,7 @@ exports.getUserSelectOptions = catchAsync(async (req, res, next) => {
   // Fetch only necessary fields for select options
   const users = await User.find(filter)
     .select(
-      "firstName lastName middleName email role position isLawyer practiceArea isActive"
+      "firstName lastName middleName email role position isLawyer practiceArea isActive",
     )
     .sort({ firstName: 1 })
     .lean();
@@ -1087,7 +1093,7 @@ exports.getAllSelectOptions = catchAsync(async (req, res, next) => {
   // Fetch all users once with minimal fields
   const allUsers = await User.find(baseFilter)
     .select(
-      "firstName lastName middleName email role position isLawyer practiceArea isActive"
+      "firstName lastName middleName email role position isLawyer practiceArea isActive",
     )
     .sort({ firstName: 1 })
     .lean();

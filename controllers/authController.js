@@ -35,6 +35,7 @@ const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
  * FIRM REGISTRATION (FIXED)
  * ===============================
  */
+
 exports.registerFirm = catchAsync(async (req, res, next) => {
   const {
     firmName,
@@ -49,7 +50,7 @@ exports.registerFirm = catchAsync(async (req, res, next) => {
     email,
     password,
     passwordConfirm,
-    plan = "FREE", // ✅ NEW: Allow plan selection during registration
+    plan = "FREE",
   } = req.body;
 
   // 1) Validate required fields
@@ -64,7 +65,7 @@ exports.registerFirm = catchAsync(async (req, res, next) => {
 
   if (password !== passwordConfirm) {
     return next(
-      new AppError("Password and passwordConfirm must be the same", 400)
+      new AppError("Password and passwordConfirm must be the same", 400),
     );
   }
 
@@ -73,8 +74,8 @@ exports.registerFirm = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         "Subdomain can only contain lowercase letters, numbers, and hyphens",
-        400
-      )
+        400,
+      ),
     );
   }
 
@@ -86,7 +87,7 @@ exports.registerFirm = catchAsync(async (req, res, next) => {
     }
   }
 
-  // ✅ 5) Validate and set plan limits
+  // ✅ 5) Plan configuration
   const planConfig = {
     FREE: {
       users: 1,
@@ -103,13 +104,13 @@ exports.registerFirm = catchAsync(async (req, res, next) => {
     PRO: {
       users: 10,
       storageGB: 100,
-      casesPerMonth: Infinity, // Unlimited
+      casesPerMonth: 999999, // Unlimited
       trialDays: 14,
     },
     ENTERPRISE: {
-      users: Infinity, // Unlimited
-      storageGB: Infinity, // Unlimited
-      casesPerMonth: Infinity, // Unlimited
+      users: 999999, // Unlimited
+      storageGB: 999999, // Unlimited
+      casesPerMonth: 999999, // Unlimited
       trialDays: 30,
     },
   };
@@ -122,7 +123,7 @@ exports.registerFirm = catchAsync(async (req, res, next) => {
   const limits = planConfig[selectedPlan];
 
   try {
-    // ✅ 6) Create Firm with proper plan limits
+    // ✅ 6) Create Firm with CORRECT limits
     const trialEndDate = new Date();
     trialEndDate.setDate(trialEndDate.getDate() + limits.trialDays);
 
@@ -144,12 +145,11 @@ exports.registerFirm = catchAsync(async (req, res, next) => {
         status: "TRIAL",
         trialEndsAt: trialEndDate,
       },
-      // ✅ Set limits based on selected plan
+      // ✅ FIX: Set limits directly from planConfig
       limits: {
-        users: limits.users === Infinity ? 999999 : limits.users,
-        storageGB: limits.storageGB === Infinity ? 999999 : limits.storageGB,
-        casesPerMonth:
-          limits.casesPerMonth === Infinity ? 999999 : limits.casesPerMonth,
+        users: limits.users,
+        storageGB: limits.storageGB,
+        casesPerMonth: limits.casesPerMonth,
       },
       // ✅ Initialize usage tracking
       usage: {
@@ -220,7 +220,7 @@ exports.registerFirm = catchAsync(async (req, res, next) => {
       console.error("Failed to send verification email:", emailError);
     }
 
-    // 10) Send success response with plan details
+    // 10) Send success response
     res.status(201).json({
       status: "success",
       message:
@@ -266,7 +266,7 @@ exports.register = catchAsync(async (req, res, next) => {
 
   if (!email || !password || !passwordConfirm) {
     return next(
-      new AppError("Please, provide email and passwords fields", 400)
+      new AppError("Please, provide email and passwords fields", 400),
     );
   }
 
@@ -276,7 +276,7 @@ exports.register = catchAsync(async (req, res, next) => {
 
   if (password !== passwordConfirm) {
     return next(
-      new AppError("Password and passwordConfirm must be the same", 400)
+      new AppError("Password and passwordConfirm must be the same", 400),
     );
   }
   // check if user exist
@@ -294,6 +294,7 @@ exports.register = catchAsync(async (req, res, next) => {
   const filename = req.file ? req.file.filename : null;
 
   await User.create({
+    firmId: req.firmId,
     firstName: req.body.firstName,
     lastName: req.body.lastName,
     secondName: req.body.secondName, //for client
@@ -342,14 +343,14 @@ exports.login = catchAsync(async (req, res, next) => {
   // Disallow login for deleted accounts (all roles)
   if (user.isDeleted === true) {
     return next(
-      new AppError("This account has been deleted and cannot log in")
+      new AppError("This account has been deleted and cannot log in"),
     );
   }
 
   // Disallow login for inactive staff, but allow inactive clients
   if (user.isActive === false && user.role !== "client") {
     return next(
-      new AppError("You are no longer eligible to login to this account")
+      new AppError("You are no longer eligible to login to this account"),
     );
   }
 
@@ -385,8 +386,8 @@ exports.login = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         "New Browser or device detected. A verification code has been sent to your email.",
-        400
-      )
+        400,
+      ),
     );
   }
 
@@ -454,8 +455,8 @@ exports.sendLoginCode = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         "Failed to send verification code. Please try again later.",
-        500
-      )
+        500,
+      ),
     );
   }
 });
@@ -482,7 +483,7 @@ exports.loginWithCode = catchAsync(async (req, res, next) => {
 
   if (!userToken) {
     return next(
-      new AppError("Verification code expired. Please request a new one.", 400)
+      new AppError("Verification code expired. Please request a new one.", 400),
     );
   }
 
@@ -543,7 +544,7 @@ exports.protect = catchAsync(async (req, res, next) => {
 
   if (!token) {
     return next(
-      new AppError("You are not logged in! Please log in to get access.", 401)
+      new AppError("You are not logged in! Please log in to get access.", 401),
     );
   }
 
@@ -554,7 +555,7 @@ exports.protect = catchAsync(async (req, res, next) => {
   const currentUser = await User.findById(verified.id);
   if (!currentUser) {
     return next(
-      new AppError("The user belonging to this token no longer exists.", 401)
+      new AppError("The user belonging to this token no longer exists.", 401),
     );
   }
 
@@ -563,15 +564,15 @@ exports.protect = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         "Your account has been suspended, please contact the admin.",
-        400
-      )
+        400,
+      ),
     );
   }
 
   // 5) Check if user changed password after the token was issued
   if (currentUser.changePasswordAfter(verified.iat)) {
     return next(
-      new AppError("User recently changed password! Please log in again.", 401)
+      new AppError("User recently changed password! Please log in again.", 401),
     );
   }
   // 6) Attach firmId and firm to req if applicable
@@ -601,7 +602,7 @@ exports.restrictTo = (...roles) => {
     // roles ['admin', 'super-admin']. role='user'
     if (!roles.includes(req.user.role)) {
       return next(
-        new AppError("You do not have permission to perform this action", 403)
+        new AppError("You do not have permission to perform this action", 403),
       );
     }
 
@@ -695,7 +696,7 @@ exports.forgotPassword = catchAsync(async (req, res, next) => {
   } catch (err) {
     return next(
       new AppError("There was an error sending the email. Try again later!"),
-      500
+      500,
     );
   }
 });
@@ -749,6 +750,7 @@ exports.sendVerificationEmail = catchAsync(async (req, res, next) => {
   const { email } = req.params; // Assuming the new user's email is passed in the request body
   //
   const user = await User.findOne({ email }); // Find the user in the database
+  const firm = await Firm.findById(req.firmId);
 
   //
   if (!user) {
@@ -784,7 +786,7 @@ exports.sendVerificationEmail = catchAsync(async (req, res, next) => {
   const context = {
     name: user.firstName,
     link: verificationURL,
-    companyName: process.env.COMPANY_NAME || "A.T Lukman & Co",
+    companyName: firm.name,
     password: process.env.TEMP_PASSWORD,
   };
 
@@ -905,8 +907,8 @@ exports.checkUserLimit = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         `Your ${planDetails.name} plan has reached the maximum number of users (${firm.limits.users}). Please upgrade your plan to add more users.`,
-        403
-      )
+        403,
+      ),
     );
   }
 
@@ -924,8 +926,8 @@ exports.checkCaseLimit = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         `Your firm has reached the monthly case limit (${firm.limits.casesPerMonth}). Please upgrade your plan.`,
-        403
-      )
+        403,
+      ),
     );
   }
 
@@ -946,8 +948,8 @@ exports.checkStorageLimit = catchAsync(async (req, res, next) => {
     return next(
       new AppError(
         `Your firm has reached the storage limit (${firm.limits.storageGB}GB). Please upgrade your plan.`,
-        403
-      )
+        403,
+      ),
     );
   }
 

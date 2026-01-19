@@ -60,7 +60,6 @@ router.post("/login", login);
 router.post("/forgotpassword", forgotPassword);
 router.get("/loginStatus", isLoggedIn);
 router.patch("/verifyUser/:verificationToken", verifyUser);
-router.post("/sendVerificationEmail/:email", sendVerificationEmail);
 router.patch("/resetpassword/:resetToken", resetPassword);
 router.post("/sendLoginCode/:email", sendLoginCode);
 router.post("/loginWithCode/:email", loginWithCode);
@@ -86,7 +85,7 @@ router.post(
   updateFirmUserCount,
   uploadUserPhoto,
   resizeUserPhoto,
-  register
+  register,
 );
 
 // ============================================
@@ -95,6 +94,7 @@ router.post(
 
 router.post("/sendAutomatedEmail", sendAutomatedEmail);
 router.post("/sendAutomatedCustomEmail", sendAutomatedCustomEmail);
+router.post("/sendVerificationEmail/:email", sendVerificationEmail);
 
 // ============================================
 // USER SELECT OPTIONS ROUTES (BEFORE /:id)
@@ -110,25 +110,25 @@ router.get("/select-options", getUserSelectOptions);
 router.get(
   "/statistics/general",
   restrictTo("admin", "super-admin", "hr"),
-  getUserStatistics
+  getUserStatistics,
 );
 
 router.get(
   "/statistics/staff",
   restrictTo("admin", "super-admin", "hr"),
-  getStaffStatistics
+  getStaffStatistics,
 );
 
 router.get(
   "/statistics/clients",
   restrictTo("admin", "super-admin", "hr"),
-  getClientStatistics
+  getClientStatistics,
 );
 
 router.get(
   "/statistics/status",
   restrictTo("admin", "super-admin", "hr"),
-  getStatusStatistics
+  getStatusStatistics,
 );
 
 // ============================================
@@ -138,19 +138,19 @@ router.get(
 router.get(
   "/staff/status/:status",
   restrictTo("admin", "super-admin", "hr"),
-  getStaffByStatus
+  getStaffByStatus,
 );
 
 router.get(
   "/clients/status/:status",
   restrictTo("admin", "super-admin", "hr"),
-  getClientsByStatus
+  getClientsByStatus,
 );
 
 router.get(
   "/all/status/:status",
   restrictTo("admin", "super-admin", "hr"),
-  getAllUsersByStatus
+  getAllUsersByStatus,
 );
 
 // ============================================
@@ -170,7 +170,7 @@ router.get(
   restrictTo("admin", "super-admin", "hr"),
   (req, res, next) => {
     return getUsers(req, res, next);
-  }
+  },
 );
 
 router.get(
@@ -179,7 +179,7 @@ router.get(
   (req, res, next) => {
     req.params.status = "active";
     return getStaffByStatus(req, res, next);
-  }
+  },
 );
 
 router.get(
@@ -188,7 +188,7 @@ router.get(
   (req, res, next) => {
     req.params.status = "inactive";
     return getClientsByStatus(req, res, next);
-  }
+  },
 );
 
 // ============================================
@@ -203,7 +203,7 @@ router.patch("/updateUser", uploadUserPhoto, resizeUserPhoto, updateUser);
 router.patch(
   "/upgradeUser/:id",
   restrictTo("admin", "super-admin"),
-  upgradeUser
+  upgradeUser,
 );
 
 router.delete(
@@ -211,7 +211,7 @@ router.delete(
   restrictTo("admin", "super-admin"),
   updateFirmUserCount,
   softDeleteItem({ model: User, modelName: "User" }),
-  updateFirmUserCount
+  updateFirmUserCount,
 );
 
 module.exports = router;
