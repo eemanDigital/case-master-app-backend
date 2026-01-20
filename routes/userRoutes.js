@@ -1,9 +1,14 @@
+// routes/userRoutes.js - UPDATED
+
 const express = require("express");
 const {
   getUsers,
   getUser,
   updateUser,
   getUsersByRole,
+  getUsersByUserType,
+  getAllLawyers,
+  getAllClients,
   getUsersByStatus,
   getActiveUsers,
   upgradeUser,
@@ -19,6 +24,9 @@ const {
   getUserStatistics,
   getStaffStatistics,
   getClientStatistics,
+  deleteUser,
+  softDeleteUser,
+  restoreUser,
 } = require("../controllers/userController");
 
 const {
@@ -46,13 +54,10 @@ const {
   resizeUserPhoto,
 } = require("../controllers/photoContoller");
 
-const { softDeleteItem } = require("../controllers/softDeleteController");
-const User = require("../models/userModel");
-
 const router = express.Router();
 
 // ============================================
-// PUBLIC ROUTES (No authentication required)
+// PUBLIC ROUTES
 // ============================================
 
 router.post("/register-firm", registerFirm);
@@ -66,7 +71,7 @@ router.post("/loginWithCode/:email", loginWithCode);
 router.post("/google/callback", loginWithGoogle);
 
 // ============================================
-// PROTECTED ROUTES (Authentication required)
+// PROTECTED ROUTES
 // ============================================
 
 router.use(protect);
@@ -75,7 +80,7 @@ router.get("/logout", logout);
 router.patch("/changepassword", changePassword);
 
 // ============================================
-// USER REGISTRATION (Add user to existing firm)
+// USER REGISTRATION
 // ============================================
 
 router.post(
@@ -97,14 +102,14 @@ router.post("/sendAutomatedCustomEmail", sendAutomatedCustomEmail);
 router.post("/sendVerificationEmail/:email", sendVerificationEmail);
 
 // ============================================
-// USER SELECT OPTIONS ROUTES (BEFORE /:id)
+// SELECT OPTIONS ROUTES
 // ============================================
 
 router.get("/select-options/all", getAllSelectOptions);
 router.get("/select-options", getUserSelectOptions);
 
 // ============================================
-// STATISTICS ROUTES (BEFORE /:id)
+// STATISTICS ROUTES
 // ============================================
 
 router.get(
@@ -132,7 +137,27 @@ router.get(
 );
 
 // ============================================
-// ENHANCED STATUS-BASED ROUTES (BEFORE /:id)
+// USER TYPE SPECIFIC ROUTES
+// ============================================
+
+router.get(
+  "/type/:userType",
+  restrictTo("admin", "super-admin", "hr"),
+  getUsersByUserType,
+);
+router.get(
+  "/lawyers/all",
+  restrictTo("admin", "super-admin", "hr"),
+  getAllLawyers,
+);
+router.get(
+  "/clients/all",
+  restrictTo("admin", "super-admin", "hr"),
+  getAllClients,
+);
+
+// ============================================
+// STATUS-BASED ROUTES
 // ============================================
 
 router.get(
@@ -154,7 +179,7 @@ router.get(
 );
 
 // ============================================
-// FILTERED USER ROUTES (BEFORE /:id)
+// FILTERED USER ROUTES
 // ============================================
 
 router.get("/role/:role", getUsersByRole);
@@ -162,7 +187,7 @@ router.get("/status/:status", getUsersByStatus);
 router.get("/active", getActiveUsers);
 
 // ============================================
-// ENHANCED FILTERING ROUTES (BEFORE /:id)
+// ENHANCED FILTERING ROUTES
 // ============================================
 
 router.get(
@@ -206,11 +231,31 @@ router.patch(
   upgradeUser,
 );
 
+// ============================================
+// DELETE/UNDELETE ROUTES
+// ============================================
+
 router.delete(
+  "/delete/:id",
+  restrictTo("admin", "super-admin"),
+  updateFirmUserCount,
+  deleteUser,
+  updateFirmUserCount,
+);
+
+router.patch(
   "/soft-delete/:id",
   restrictTo("admin", "super-admin"),
   updateFirmUserCount,
-  softDeleteItem({ model: User, modelName: "User" }),
+  softDeleteUser,
+  updateFirmUserCount,
+);
+
+router.patch(
+  "/restore/:id",
+  restrictTo("admin", "super-admin"),
+  updateFirmUserCount,
+  restoreUser,
   updateFirmUserCount,
 );
 
