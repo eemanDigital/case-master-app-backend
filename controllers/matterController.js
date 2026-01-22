@@ -1,4 +1,4 @@
-const Matter = require("../models/Matter.model");
+const Matter = require("../models/matterModel");
 const LitigationDetail = require("../models/litigationDetailModel");
 const CorporateDetail = require("../models/corporateDetailModel");
 const AdvisoryDetail = require("../models/advisoryDetailModel");
@@ -36,7 +36,7 @@ const getDetailModel = (matterType) => {
  */
 const buildFirmQuery = (req, additionalFilters = {}) => {
   return {
-    firmId: req.user.firmId,
+    firmId: req.firmId,
     isDeleted: false,
     ...additionalFilters,
   };
@@ -83,7 +83,7 @@ exports.createMatter = catchAsync(async (req, res, next) => {
   const matter = await Matter.create({
     ...matterData,
     matterType,
-    firmId: req.user.firmId,
+    firmId: req.firmId,
     createdBy: req.user._id,
   });
 
@@ -98,7 +98,7 @@ exports.createMatter = catchAsync(async (req, res, next) => {
     await DetailModel.create({
       ...detailData,
       matterId: matter._id,
-      firmId: req.user.firmId,
+      firmId: req.firmId,
     });
   }
 
@@ -292,7 +292,7 @@ exports.updateMatter = catchAsync(async (req, res, next) => {
 
     if (DetailModel) {
       await DetailModel.findOneAndUpdate(
-        { matterId: matter._id, firmId: req.user.firmId },
+        { matterId: matter._id, firmId: req.firmId },
         detailData,
         { new: true, runValidators: true, upsert: true },
       );
@@ -351,7 +351,7 @@ exports.deleteMatter = catchAsync(async (req, res, next) => {
   const DetailModel = getDetailModel(matter.matterType);
   if (DetailModel) {
     await DetailModel.findOneAndUpdate(
-      { matterId: matter._id, firmId: req.user.firmId },
+      { matterId: matter._id, firmId: req.firmId },
       {
         isDeleted: true,
         deletedAt: Date.now(),
@@ -379,7 +379,7 @@ exports.restoreMatter = catchAsync(async (req, res, next) => {
   const { id } = req.params;
 
   const matter = await Matter.findOne({
-    firmId: req.user.firmId,
+    firmId: req.firmId,
     _id: id,
     isDeleted: true,
   });
@@ -395,7 +395,7 @@ exports.restoreMatter = catchAsync(async (req, res, next) => {
   const DetailModel = getDetailModel(matter.matterType);
   if (DetailModel) {
     await DetailModel.findOneAndUpdate(
-      { matterId: matter._id, firmId: req.user.firmId },
+      { matterId: matter._id, firmId: req.firmId },
       {
         isDeleted: false,
         $unset: { deletedAt: 1, deletedBy: 1 },
@@ -421,7 +421,7 @@ exports.restoreMatter = catchAsync(async (req, res, next) => {
  * @access  Private
  */
 exports.getMatterStats = catchAsync(async (req, res, next) => {
-  const firmQuery = { firmId: req.user.firmId, isDeleted: false };
+  const firmQuery = { firmId: req.firmId, isDeleted: false };
 
   // Aggregate statistics
   const stats = await Matter.aggregate([

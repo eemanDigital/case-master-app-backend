@@ -66,6 +66,16 @@ const hearingSchema = new mongoose.Schema(
       trim: true,
       maxlength: [2000, "Notes must be less than 2000 characters"],
     },
+    preparedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+    lawyerPresent: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+    ],
   },
   { timestamps: true },
 );

@@ -363,6 +363,8 @@ advisoryDetailSchema.virtual("matter", {
   justOne: true,
 });
 
-const AdvisoryDetail = mongoose.model("AdvisoryDetail", advisoryDetailSchema);
+const AdvisoryDetail =
+  mongoose.models.AdvisoryDetail ||
+  mongoose.model("AdvisoryDetail", advisoryDetailSchema);
 
 module.exports = AdvisoryDetail;

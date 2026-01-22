@@ -3,6 +3,7 @@ const matterController = require("../controllers/matterController");
 const litigationController = require("../controllers/litigationController");
 const corporateController = require("../controllers/corporateController");
 const { protect, restrictTo } = require("../controllers/authController");
+
 // ============================================
 // MATTER ROUTES (General)
 // ============================================
@@ -51,6 +52,20 @@ litigationRouter.get(
 
 // List all litigation matters
 litigationRouter.get("/", litigationController.getAllLitigationMatters);
+
+// Litigation details CRUD
+litigationRouter.post(
+  "/:matterId/details",
+  litigationController.createLitigationDetails,
+);
+litigationRouter.get(
+  "/:matterId/details",
+  litigationController.getLitigationDetails,
+);
+litigationRouter.patch(
+  "/:matterId/details",
+  litigationController.updateLitigationDetails,
+);
 
 // Hearings management
 litigationRouter.post("/:matterId/hearings", litigationController.addHearing);
@@ -105,6 +120,27 @@ corporateRouter.get(
 // List all corporate matters
 corporateRouter.get("/", corporateController.getAllCorporateMatters);
 
+// Corporate details CRUD
+corporateRouter.post(
+  "/:matterId/details",
+  corporateController.createCorporateDetails,
+);
+corporateRouter.get(
+  "/:matterId/details",
+  corporateController.getCorporateDetails,
+);
+corporateRouter.patch(
+  "/:matterId/details",
+  corporateController.updateCorporateDetails,
+);
+
+// Parties management
+corporateRouter.post("/:matterId/parties", corporateController.addParty);
+corporateRouter.patch(
+  "/:matterId/parties/:index",
+  corporateController.updateParty,
+);
+
 // Milestones
 corporateRouter.post("/:matterId/milestones", corporateController.addMilestone);
 corporateRouter.patch(
@@ -149,6 +185,16 @@ corporateRouter.post(
 corporateRouter.patch(
   "/:matterId/agreements/:agreementId",
   corporateController.updateKeyAgreement,
+);
+
+// Compliance requirements
+corporateRouter.post(
+  "/:matterId/compliance",
+  corporateController.addComplianceRequirement,
+);
+corporateRouter.patch(
+  "/:matterId/compliance/:index",
+  corporateController.updateComplianceRequirement,
 );
 
 // Transaction closing

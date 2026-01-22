@@ -1,5 +1,5 @@
-const Matter = require("../models/Matter.model");
-const LitigationDetail = require("../models/LitigationDetail.model");
+const Matter = require("../models/matterModel");
+const LitigationDetail = require("../models/litigationDetailModel");
 const catchAsync = require("../utils/catchAsync");
 const AppError = require("../utils/appError");
 
@@ -26,7 +26,7 @@ exports.getAllLitigationMatters = catchAsync(async (req, res, next) => {
 
   // Build matter filter
   const matterFilter = {
-    firmId: req.user.firmId,
+    firmId: req.firmId,
     matterType: "litigation",
     isDeleted: false,
   };
@@ -34,7 +34,7 @@ exports.getAllLitigationMatters = catchAsync(async (req, res, next) => {
   if (status) matterFilter.status = status;
 
   // Build litigation detail filter
-  const detailFilter = { firmId: req.user.firmId };
+  const detailFilter = { firmId: req.firmId };
   if (courtName) detailFilter.courtName = courtName;
   if (suitNo) detailFilter.suitNo = { $regex: suitNo, $options: "i" };
   if (currentStage) detailFilter.currentStage = currentStage;
@@ -78,6 +78,127 @@ exports.getAllLitigationMatters = catchAsync(async (req, res, next) => {
 });
 
 // ============================================
+// CREATE LITIGATION DETAILS
+// ============================================
+
+/**
+ * @desc    Create litigation details for a matter
+ * @route   POST /api/litigation/:matterId/details
+ * @access  Private
+ */
+exports.createLitigationDetails = catchAsync(async (req, res, next) => {
+  const { matterId } = req.params;
+  const litigationData = req.body;
+
+  // 1. Verify matter exists and is litigation
+  const matter = await Matter.findOne({
+    _id: matterId,
+    firmId: req.firmId,
+    matterType: "litigation",
+    isDeleted: false,
+  });
+
+  if (!matter) {
+    return next(new AppError("Litigation matter not found", 404));
+  }
+
+  // 2. Check if litigation details already exist
+  const existingDetail = await LitigationDetail.findOne({
+    matterId,
+    firmId: req.firmId,
+  });
+
+  if (existingDetail) {
+    return next(
+      new AppError("Litigation details already exist for this matter", 400),
+    );
+  }
+
+  // 3. Create litigation detail
+  const litigationDetail = new LitigationDetail({
+    matterId,
+    firmId: req.firmId,
+    ...litigationData,
+  });
+
+  await litigationDetail.save();
+
+  res.status(201).json({
+    status: "success",
+    data: {
+      litigationDetail,
+    },
+  });
+});
+
+// ============================================
+// GET LITIGATION DETAILS
+// ============================================
+
+/**
+ * @desc    Get litigation details for a specific matter
+ * @route   GET /api/litigation/:matterId/details
+ * @access  Private
+ */
+exports.getLitigationDetails = catchAsync(async (req, res, next) => {
+  const { matterId } = req.params;
+
+  const litigationDetail = await LitigationDetail.findOne({
+    matterId,
+    firmId: req.firmId,
+  }).populate({
+    path: "matter",
+    select: "matterNumber title client accountOfficer status priority",
+    populate: [
+      { path: "client", select: "firstName lastName email phone" },
+      { path: "accountOfficer", select: "firstName lastName email photo" },
+    ],
+  });
+
+  if (!litigationDetail) {
+    return next(new AppError("Litigation details not found", 404));
+  }
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      litigationDetail,
+    },
+  });
+});
+
+// ============================================
+// UPDATE LITIGATION DETAILS
+// ============================================
+
+/**
+ * @desc    Update litigation details
+ * @route   PATCH /api/litigation/:matterId/details
+ * @access  Private
+ */
+exports.updateLitigationDetails = catchAsync(async (req, res, next) => {
+  const { matterId } = req.params;
+  const updateData = req.body;
+
+  const litigationDetail = await LitigationDetail.findOneAndUpdate(
+    { matterId, firmId: req.firmId },
+    updateData,
+    { new: true, runValidators: true },
+  );
+
+  if (!litigationDetail) {
+    return next(new AppError("Litigation details not found", 404));
+  }
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      litigationDetail,
+    },
+  });
+});
+
+// ============================================
 // GET UPCOMING HEARINGS
 // ============================================
 
@@ -94,24 +215,34 @@ exports.getUpcomingHearings = catchAsync(async (req, res, next) => {
   endDate.setDate(endDate.getDate() + Number(days));
 
   const litigationDetails = await LitigationDetail.find({
-    firmId: req.user.firmId,
+    firmId: req.firmId,
     isDeleted: false,
     nextHearingDate: {
       $gte: startDate,
       $lte: endDate,
     },
   })
-    .populate({
-      path: "matter",
-      select: "matterNumber title client accountOfficer status priority",
-      populate: [
-        { path: "client", select: "firstName lastName email phone" },
-        {
-          path: "accountOfficer",
-          select: "firstName lastName email photo",
-        },
-      ],
-    })
+    .populate([
+      {
+        path: "matter",
+        select: "matterNumber title client accountOfficer status priority",
+        populate: [
+          { path: "client", select: "firstName lastName email phone" },
+          {
+            path: "accountOfficer",
+            select: "firstName lastName email photo",
+          },
+        ],
+      },
+      {
+        path: "hearings.preparedBy",
+        select: "firstName lastName email photo",
+      },
+      {
+        path: "hearings.lawyerPresent",
+        select: "firstName lastName email photo",
+      },
+    ])
     .sort({ nextHearingDate: 1 });
 
   // Filter out matters that are deleted
@@ -141,10 +272,10 @@ exports.addHearing = catchAsync(async (req, res, next) => {
   const { matterId } = req.params;
   const hearingData = req.body;
 
-  // Verify matter exists and is litigation
+  // 1. Verify matter exists and is litigation
   const matter = await Matter.findOne({
     _id: matterId,
-    firmId: req.user.firmId,
+    firmId: req.firmId,
     matterType: "litigation",
     isDeleted: false,
   });
@@ -153,24 +284,56 @@ exports.addHearing = catchAsync(async (req, res, next) => {
     return next(new AppError("Litigation matter not found", 404));
   }
 
-  // Update litigation detail
-  const litigationDetail = await LitigationDetail.findOneAndUpdate(
-    { matterId, firmId: req.user.firmId },
-    {
-      $push: { hearings: hearingData },
-    },
-    { new: true, runValidators: true },
-  );
+  // 2. Find or create litigation detail
+  let litigationDetail = await LitigationDetail.findOne({
+    matterId,
+    firmId: req.firmId,
+  });
 
   if (!litigationDetail) {
-    return next(new AppError("Litigation details not found", 404));
+    // Create a basic litigation detail if it doesn't exist
+    litigationDetail = new LitigationDetail({
+      matterId,
+      firmId: req.firmId,
+      suitNo: "TEMP/" + new Date().getFullYear() + "/001",
+      courtName: "high court",
+      state: "Lagos",
+      modeOfCommencement: "writ of summons",
+      filingDate: new Date(),
+      currentStage: "pre-trial",
+    });
   }
+
+  // 3. Add preparedBy from authenticated user if not provided
+  const hearingWithUser = {
+    ...hearingData,
+    preparedBy: hearingData.preparedBy || req.user.id,
+  };
+
+  // 4. Validate hearing data
+  if (!hearingWithUser.date) {
+    return next(new AppError("Hearing date is required", 400));
+  }
+
+  // 5. Add the hearing
+  litigationDetail.hearings.push(hearingWithUser);
+  await litigationDetail.save();
+
+  // 6. Populate the user references
+  await litigationDetail.populate([
+    {
+      path: "hearings.preparedBy",
+      select: "firstName lastName email photo",
+    },
+    {
+      path: "hearings.lawyerPresent",
+      select: "firstName lastName email photo",
+    },
+  ]);
 
   res.status(200).json({
     status: "success",
-    data: {
-      litigationDetail,
-    },
+    data: { litigationDetail },
   });
 });
 
@@ -187,19 +350,32 @@ exports.updateHearing = catchAsync(async (req, res, next) => {
   const { matterId, hearingId } = req.params;
   const updateData = req.body;
 
+  // Prepare update object
+  const setObj = {};
+  for (const key in updateData) {
+    setObj[`hearings.$.${key}`] = updateData[key];
+  }
+
   const litigationDetail = await LitigationDetail.findOneAndUpdate(
     {
       matterId,
-      firmId: req.user.firmId,
+      firmId: req.firmId,
       "hearings._id": hearingId,
     },
     {
-      $set: {
-        "hearings.$": { ...updateData, _id: hearingId },
-      },
+      $set: setObj,
     },
     { new: true, runValidators: true },
-  );
+  ).populate([
+    {
+      path: "hearings.preparedBy",
+      select: "firstName lastName email photo",
+    },
+    {
+      path: "hearings.lawyerPresent",
+      select: "firstName lastName email photo",
+    },
+  ]);
 
   if (!litigationDetail) {
     return next(new AppError("Hearing not found", 404));
@@ -228,7 +404,7 @@ exports.addCourtOrder = catchAsync(async (req, res, next) => {
 
   const matter = await Matter.findOne({
     _id: matterId,
-    firmId: req.user.firmId,
+    firmId: req.firmId,
     matterType: "litigation",
     isDeleted: false,
   });
@@ -238,12 +414,54 @@ exports.addCourtOrder = catchAsync(async (req, res, next) => {
   }
 
   const litigationDetail = await LitigationDetail.findOneAndUpdate(
-    { matterId, firmId: req.user.firmId },
+    { matterId, firmId: req.firmId },
     {
       $push: { courtOrders: orderData },
     },
     { new: true, runValidators: true },
   );
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      litigationDetail,
+    },
+  });
+});
+
+// ============================================
+// ADD PROCESS FILED BY PARTY
+// ============================================
+
+/**
+ * @desc    Add a process filed by a party
+ * @route   POST /api/litigation/:matterId/processes
+ * @access  Private
+ */
+exports.addProcessFiled = catchAsync(async (req, res, next) => {
+  const { matterId } = req.params;
+  const { party, processData } = req.body; // party: 'firstParty' | 'secondParty' | 'otherParty'
+
+  if (!["firstParty", "secondParty", "otherParty"].includes(party)) {
+    return next(new AppError("Invalid party specified", 400));
+  }
+
+  const updatePath =
+    party === "otherParty"
+      ? "otherParty.0.processesFiled"
+      : `${party}.processesFiled`;
+
+  const litigationDetail = await LitigationDetail.findOneAndUpdate(
+    { matterId, firmId: req.firmId },
+    {
+      $push: { [updatePath]: processData },
+    },
+    { new: true, runValidators: true },
+  );
+
+  if (!litigationDetail) {
+    return next(new AppError("Litigation details not found", 404));
+  }
 
   res.status(200).json({
     status: "success",
@@ -268,7 +486,7 @@ exports.recordJudgment = catchAsync(async (req, res, next) => {
 
   const matter = await Matter.findOne({
     _id: matterId,
-    firmId: req.user.firmId,
+    firmId: req.firmId,
     matterType: "litigation",
     isDeleted: false,
   });
@@ -279,7 +497,7 @@ exports.recordJudgment = catchAsync(async (req, res, next) => {
 
   // Update judgment in litigation detail
   const litigationDetail = await LitigationDetail.findOneAndUpdate(
-    { matterId, firmId: req.user.firmId },
+    { matterId, firmId: req.firmId },
     {
       judgment: judgmentData,
       currentStage: "judgment",
@@ -330,7 +548,7 @@ exports.recordSettlement = catchAsync(async (req, res, next) => {
 
   const matter = await Matter.findOne({
     _id: matterId,
-    firmId: req.user.firmId,
+    firmId: req.firmId,
     matterType: "litigation",
     isDeleted: false,
   });
@@ -341,7 +559,7 @@ exports.recordSettlement = catchAsync(async (req, res, next) => {
 
   // Update settlement in litigation detail
   const litigationDetail = await LitigationDetail.findOneAndUpdate(
-    { matterId, firmId: req.user.firmId },
+    { matterId, firmId: req.firmId },
     {
       settlement: { ...settlementData, isSettled: true },
       currentStage: "settled",
@@ -380,7 +598,7 @@ exports.fileAppeal = catchAsync(async (req, res, next) => {
 
   const matter = await Matter.findOne({
     _id: matterId,
-    firmId: req.user.firmId,
+    firmId: req.firmId,
     matterType: "litigation",
     isDeleted: false,
   });
@@ -390,7 +608,7 @@ exports.fileAppeal = catchAsync(async (req, res, next) => {
   }
 
   const litigationDetail = await LitigationDetail.findOneAndUpdate(
-    { matterId, firmId: req.user.firmId },
+    { matterId, firmId: req.firmId },
     {
       appeal: { ...appealData, isAppealed: true },
       currentStage: "appeal",
@@ -416,7 +634,7 @@ exports.fileAppeal = catchAsync(async (req, res, next) => {
  * @access  Private
  */
 exports.getLitigationStats = catchAsync(async (req, res, next) => {
-  const firmQuery = { firmId: req.user.firmId, isDeleted: false };
+  const firmQuery = { firmId: req.firmId, isDeleted: false };
 
   // Count by court
   const byCourt = await LitigationDetail.aggregate([
@@ -468,48 +686,6 @@ exports.getLitigationStats = catchAsync(async (req, res, next) => {
       byStage,
       upcomingHearings,
       outcomes,
-    },
-  });
-});
-
-// ============================================
-// ADD PROCESS FILED BY PARTY
-// ============================================
-
-/**
- * @desc    Add a process filed by a party
- * @route   POST /api/litigation/:matterId/processes
- * @access  Private
- */
-exports.addProcessFiled = catchAsync(async (req, res, next) => {
-  const { matterId } = req.params;
-  const { party, processData } = req.body; // party: 'firstParty' | 'secondParty' | 'otherParty'
-
-  if (!["firstParty", "secondParty", "otherParty"].includes(party)) {
-    return next(new AppError("Invalid party specified", 400));
-  }
-
-  const updatePath =
-    party === "otherParty"
-      ? "otherParty.0.processesFiled"
-      : `${party}.processesFiled`;
-
-  const litigationDetail = await LitigationDetail.findOneAndUpdate(
-    { matterId, firmId: req.user.firmId },
-    {
-      $push: { [updatePath]: processData },
-    },
-    { new: true, runValidators: true },
-  );
-
-  if (!litigationDetail) {
-    return next(new AppError("Litigation details not found", 404));
-  }
-
-  res.status(200).json({
-    status: "success",
-    data: {
-      litigationDetail,
     },
   });
 });

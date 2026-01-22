@@ -1,5 +1,5 @@
-const Matter = require("../models/Matter.model");
-const CorporateDetail = require("../models/CorporateDetail.model");
+const Matter = require("../models/matterModel");
+const CorporateDetail = require("../models/corporateDetailModel");
 const catchAsync = require("../utils/catchAsync");
 const AppError = require("../utils/appError");
 
@@ -23,7 +23,7 @@ exports.getAllCorporateMatters = catchAsync(async (req, res, next) => {
   } = req.query;
 
   const matterFilter = {
-    firmId: req.user.firmId,
+    firmId: req.firmId,
     matterType: "corporate",
     isDeleted: false,
   };
@@ -33,7 +33,7 @@ exports.getAllCorporateMatters = catchAsync(async (req, res, next) => {
   // Filter by corporate-specific fields if provided
   let matterIds = null;
   if (transactionType || companyName) {
-    const detailFilter = { firmId: req.user.firmId };
+    const detailFilter = { firmId: req.firmId };
     if (transactionType) detailFilter.transactionType = transactionType;
     if (companyName)
       detailFilter.companyName = { $regex: companyName, $options: "i" };
@@ -69,6 +69,201 @@ exports.getAllCorporateMatters = catchAsync(async (req, res, next) => {
 });
 
 // ============================================
+// CREATE CORPORATE DETAILS
+// ============================================
+
+/**
+ * @desc    Create corporate details for a matter
+ * @route   POST /api/corporate/:matterId/details
+ * @access  Private
+ */
+exports.createCorporateDetails = catchAsync(async (req, res, next) => {
+  const { matterId } = req.params;
+  const corporateData = req.body;
+
+  // 1. Verify matter exists and is corporate type
+  const matter = await Matter.findOne({
+    _id: matterId,
+    firmId: req.firmId,
+    matterType: "corporate",
+    isDeleted: false,
+  });
+
+  if (!matter) {
+    return next(new AppError("Corporate matter not found", 404));
+  }
+
+  // 2. Check if corporate details already exist
+  const existingDetail = await CorporateDetail.findOne({
+    matterId,
+    firmId: req.firmId,
+  });
+
+  if (existingDetail) {
+    return next(
+      new AppError("Corporate details already exist for this matter", 400),
+    );
+  }
+
+  // 3. Create corporate detail
+  const corporateDetail = new CorporateDetail({
+    matterId,
+    firmId: req.firmId,
+    ...corporateData,
+  });
+
+  await corporateDetail.save();
+
+  res.status(201).json({
+    status: "success",
+    data: {
+      corporateDetail,
+    },
+  });
+});
+
+// ============================================
+// GET CORPORATE DETAILS
+// ============================================
+
+/**
+ * @desc    Get corporate details for a specific matter
+ * @route   GET /api/corporate/:matterId/details
+ * @access  Private
+ */
+exports.getCorporateDetails = catchAsync(async (req, res, next) => {
+  const { matterId } = req.params;
+
+  const corporateDetail = await CorporateDetail.findOne({
+    matterId,
+    firmId: req.firmId,
+  }).populate({
+    path: "matter",
+    select: "matterNumber title client accountOfficer status priority",
+    populate: [
+      { path: "client", select: "firstName lastName email phone" },
+      { path: "accountOfficer", select: "firstName lastName email photo" },
+    ],
+  });
+
+  if (!corporateDetail) {
+    return next(new AppError("Corporate details not found", 404));
+  }
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      corporateDetail,
+    },
+  });
+});
+
+// ============================================
+// UPDATE CORPORATE DETAILS
+// ============================================
+
+/**
+ * @desc    Update corporate details
+ * @route   PATCH /api/corporate/:matterId/details
+ * @access  Private
+ */
+exports.updateCorporateDetails = catchAsync(async (req, res, next) => {
+  const { matterId } = req.params;
+  const updateData = req.body;
+
+  const corporateDetail = await CorporateDetail.findOneAndUpdate(
+    { matterId, firmId: req.firmId },
+    updateData,
+    { new: true, runValidators: true },
+  );
+
+  if (!corporateDetail) {
+    return next(new AppError("Corporate details not found", 404));
+  }
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      corporateDetail,
+    },
+  });
+});
+
+// ============================================
+// ADD PARTY
+// ============================================
+
+/**
+ * @desc    Add party to corporate transaction
+ * @route   POST /api/corporate/:matterId/parties
+ * @access  Private
+ */
+exports.addParty = catchAsync(async (req, res, next) => {
+  const { matterId } = req.params;
+  const partyData = req.body;
+
+  const corporateDetail = await CorporateDetail.findOneAndUpdate(
+    { matterId, firmId: req.firmId },
+    {
+      $push: { parties: partyData },
+    },
+    { new: true, runValidators: true },
+  );
+
+  if (!corporateDetail) {
+    return next(new AppError("Corporate details not found", 404));
+  }
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      corporateDetail,
+    },
+  });
+});
+
+// ============================================
+// UPDATE PARTY
+// ============================================
+
+/**
+ * @desc    Update party information
+ * @route   PATCH /api/corporate/:matterId/parties/:index
+ * @access  Private
+ */
+exports.updateParty = catchAsync(async (req, res, next) => {
+  const { matterId, index } = req.params;
+  const partyData = req.body;
+
+  const corporateDetail = await CorporateDetail.findOne({
+    matterId,
+    firmId: req.firmId,
+  });
+
+  if (!corporateDetail) {
+    return next(new AppError("Corporate details not found", 404));
+  }
+
+  if (index >= corporateDetail.parties.length) {
+    return next(new AppError("Invalid party index", 400));
+  }
+
+  corporateDetail.parties[index] = {
+    ...corporateDetail.parties[index],
+    ...partyData,
+  };
+
+  await corporateDetail.save();
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      corporateDetail,
+    },
+  });
+});
+
+// ============================================
 // ADD MILESTONE
 // ============================================
 
@@ -83,7 +278,7 @@ exports.addMilestone = catchAsync(async (req, res, next) => {
 
   const matter = await Matter.findOne({
     _id: matterId,
-    firmId: req.user.firmId,
+    firmId: req.firmId,
     matterType: "corporate",
     isDeleted: false,
   });
@@ -93,7 +288,7 @@ exports.addMilestone = catchAsync(async (req, res, next) => {
   }
 
   const corporateDetail = await CorporateDetail.findOneAndUpdate(
-    { matterId, firmId: req.user.firmId },
+    { matterId, firmId: req.firmId },
     {
       $push: { milestones: milestoneData },
     },
@@ -121,16 +316,20 @@ exports.updateMilestone = catchAsync(async (req, res, next) => {
   const { matterId, milestoneId } = req.params;
   const updateData = req.body;
 
+  // Build update object dynamically using dot notation
+  const updateObject = {};
+  Object.keys(updateData).forEach((key) => {
+    updateObject[`milestones.$.${key}`] = updateData[key];
+  });
+
   const corporateDetail = await CorporateDetail.findOneAndUpdate(
     {
       matterId,
-      firmId: req.user.firmId,
+      firmId: req.firmId,
       "milestones._id": milestoneId,
     },
     {
-      $set: {
-        "milestones.$": { ...updateData, _id: milestoneId },
-      },
+      $set: updateObject,
     },
     { new: true, runValidators: true },
   );
@@ -161,7 +360,7 @@ exports.updateDueDiligence = catchAsync(async (req, res, next) => {
   const dueDiligenceData = req.body;
 
   const corporateDetail = await CorporateDetail.findOneAndUpdate(
-    { matterId, firmId: req.user.firmId },
+    { matterId, firmId: req.firmId },
     {
       dueDiligence: dueDiligenceData,
     },
@@ -194,7 +393,7 @@ exports.addRegulatoryApproval = catchAsync(async (req, res, next) => {
   const approvalData = req.body;
 
   const corporateDetail = await CorporateDetail.findOneAndUpdate(
-    { matterId, firmId: req.user.firmId },
+    { matterId, firmId: req.firmId },
     {
       $push: { regulatoryApprovals: approvalData },
     },
@@ -226,16 +425,20 @@ exports.updateRegulatoryApproval = catchAsync(async (req, res, next) => {
   const { matterId, approvalId } = req.params;
   const updateData = req.body;
 
+  // Build update object dynamically using dot notation
+  const updateObject = {};
+  Object.keys(updateData).forEach((key) => {
+    updateObject[`regulatoryApprovals.$.${key}`] = updateData[key];
+  });
+
   const corporateDetail = await CorporateDetail.findOneAndUpdate(
     {
       matterId,
-      firmId: req.user.firmId,
+      firmId: req.firmId,
       "regulatoryApprovals._id": approvalId,
     },
     {
-      $set: {
-        "regulatoryApprovals.$": { ...updateData, _id: approvalId },
-      },
+      $set: updateObject,
     },
     { new: true, runValidators: true },
   );
@@ -266,7 +469,7 @@ exports.addShareholder = catchAsync(async (req, res, next) => {
   const shareholderData = req.body;
 
   const corporateDetail = await CorporateDetail.findOneAndUpdate(
-    { matterId, firmId: req.user.firmId },
+    { matterId, firmId: req.firmId },
     {
       $push: { shareholders: shareholderData },
     },
@@ -300,7 +503,7 @@ exports.updateShareholder = catchAsync(async (req, res, next) => {
 
   const corporateDetail = await CorporateDetail.findOne({
     matterId,
-    firmId: req.user.firmId,
+    firmId: req.firmId,
   });
 
   if (!corporateDetail) {
@@ -340,7 +543,7 @@ exports.addDirector = catchAsync(async (req, res, next) => {
   const directorData = req.body;
 
   const corporateDetail = await CorporateDetail.findOneAndUpdate(
-    { matterId, firmId: req.user.firmId },
+    { matterId, firmId: req.firmId },
     {
       $push: { directors: directorData },
     },
@@ -373,7 +576,7 @@ exports.addKeyAgreement = catchAsync(async (req, res, next) => {
   const agreementData = req.body;
 
   const corporateDetail = await CorporateDetail.findOneAndUpdate(
-    { matterId, firmId: req.user.firmId },
+    { matterId, firmId: req.firmId },
     {
       $push: { keyAgreements: agreementData },
     },
@@ -405,16 +608,20 @@ exports.updateKeyAgreement = catchAsync(async (req, res, next) => {
   const { matterId, agreementId } = req.params;
   const updateData = req.body;
 
+  // Build update object dynamically using dot notation
+  const updateObject = {};
+  Object.keys(updateData).forEach((key) => {
+    updateObject[`keyAgreements.$.${key}`] = updateData[key];
+  });
+
   const corporateDetail = await CorporateDetail.findOneAndUpdate(
     {
       matterId,
-      firmId: req.user.firmId,
+      firmId: req.firmId,
       "keyAgreements._id": agreementId,
     },
     {
-      $set: {
-        "keyAgreements.$": { ...updateData, _id: agreementId },
-      },
+      $set: updateObject,
     },
     { new: true, runValidators: true },
   );
@@ -422,6 +629,80 @@ exports.updateKeyAgreement = catchAsync(async (req, res, next) => {
   if (!corporateDetail) {
     return next(new AppError("Agreement not found", 404));
   }
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      corporateDetail,
+    },
+  });
+});
+
+// ============================================
+// ADD COMPLIANCE REQUIREMENT
+// ============================================
+
+/**
+ * @desc    Add compliance requirement
+ * @route   POST /api/corporate/:matterId/compliance
+ * @access  Private
+ */
+exports.addComplianceRequirement = catchAsync(async (req, res, next) => {
+  const { matterId } = req.params;
+  const complianceData = req.body;
+
+  const corporateDetail = await CorporateDetail.findOneAndUpdate(
+    { matterId, firmId: req.firmId },
+    {
+      $push: { complianceRequirements: complianceData },
+    },
+    { new: true, runValidators: true },
+  );
+
+  if (!corporateDetail) {
+    return next(new AppError("Corporate details not found", 404));
+  }
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      corporateDetail,
+    },
+  });
+});
+
+// ============================================
+// UPDATE COMPLIANCE REQUIREMENT
+// ============================================
+
+/**
+ * @desc    Update compliance requirement
+ * @route   PATCH /api/corporate/:matterId/compliance/:index
+ * @access  Private
+ */
+exports.updateComplianceRequirement = catchAsync(async (req, res, next) => {
+  const { matterId, index } = req.params;
+  const complianceData = req.body;
+
+  const corporateDetail = await CorporateDetail.findOne({
+    matterId,
+    firmId: req.firmId,
+  });
+
+  if (!corporateDetail) {
+    return next(new AppError("Corporate details not found", 404));
+  }
+
+  if (index >= corporateDetail.complianceRequirements.length) {
+    return next(new AppError("Invalid compliance requirement index", 400));
+  }
+
+  corporateDetail.complianceRequirements[index] = {
+    ...corporateDetail.complianceRequirements[index],
+    ...complianceData,
+  };
+
+  await corporateDetail.save();
 
   res.status(200).json({
     status: "success",
@@ -446,7 +727,7 @@ exports.recordClosing = catchAsync(async (req, res, next) => {
 
   const matter = await Matter.findOne({
     _id: matterId,
-    firmId: req.user.firmId,
+    firmId: req.firmId,
     matterType: "corporate",
     isDeleted: false,
   });
@@ -457,7 +738,7 @@ exports.recordClosing = catchAsync(async (req, res, next) => {
 
   // Update corporate detail
   const corporateDetail = await CorporateDetail.findOneAndUpdate(
-    { matterId, firmId: req.user.firmId },
+    { matterId, firmId: req.firmId },
     {
       actualClosingDate,
     },
@@ -488,7 +769,7 @@ exports.recordClosing = catchAsync(async (req, res, next) => {
  * @access  Private
  */
 exports.getCorporateStats = catchAsync(async (req, res, next) => {
-  const firmQuery = { firmId: req.user.firmId, isDeleted: false };
+  const firmQuery = { firmId: req.firmId, isDeleted: false };
 
   // By transaction type
   const byType = await CorporateDetail.aggregate([
@@ -562,7 +843,7 @@ exports.getCorporateStats = catchAsync(async (req, res, next) => {
  */
 exports.getPendingApprovals = catchAsync(async (req, res, next) => {
   const corporateDetails = await CorporateDetail.find({
-    firmId: req.user.firmId,
+    firmId: req.firmId,
     isDeleted: false,
     "regulatoryApprovals.status": "pending",
   })
