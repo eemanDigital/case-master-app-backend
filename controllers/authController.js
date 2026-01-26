@@ -265,8 +265,17 @@ exports.registerFirm = catchAsync(async (req, res, next) => {
  * USER REGISTRATION (for admin creating users)
  * ===============================
  */
+// controllers/authController.js - REGISTER FUNCTION ONLY (Update in your existing file)
+
+/**
+ * ===============================
+ * USER REGISTRATION (for admin creating users)
+ * ===============================
+ */
 exports.register = catchAsync(async (req, res, next) => {
   const { email, password, passwordConfirm, userType } = req.body;
+
+  console.log(req.body)
 
   if (!email || !password || !passwordConfirm || !userType) {
     return next(new AppError("Please provide all required fields", 400));
@@ -278,7 +287,7 @@ exports.register = catchAsync(async (req, res, next) => {
 
   if (password !== passwordConfirm) {
     return next(
-      new AppError("Password and passwordConfirm must be the same", 400),
+      new AppError("Password and passwordConfirm must be the same", 400)
     );
   }
 
@@ -290,7 +299,7 @@ exports.register = catchAsync(async (req, res, next) => {
 
   if (existingUser) {
     return next(
-      new AppError("User with this email already exists in your firm", 400),
+      new AppError("User with this email already exists in your firm", 400)
     );
   }
 
@@ -301,11 +310,12 @@ exports.register = catchAsync(async (req, res, next) => {
   // Extract file for photo
   const filename = req.file ? req.file.filename : null;
 
-  // Build user data based on userType
+  // Build user data
   const userData = {
     firmId: req.firmId,
     firstName: req.body.firstName,
     lastName: req.body.lastName,
+    middleName: req.body.middleName,
     email: req.body.email.toLowerCase(),
     password: req.body.password,
     passwordConfirm: req.body.passwordConfirm,
@@ -314,28 +324,19 @@ exports.register = catchAsync(async (req, res, next) => {
     userType: req.body.userType,
     phone: req.body.phone || "+234",
     gender: req.body.gender,
+    dateOfBirth: req.body.dateOfBirth,
+    position: req.body.position,
     bio: req.body.bio,
     isVerified: false,
-    isActive: true,
+    isActive: req.body.isActive ?? true,
     userAgent,
     createdBy: req.user._id,
+    // ✅ NEW: Additional roles/privileges
+    additionalRoles: req.body.additionalRoles || [],
+    isLawyer: req.body.hasLawyerPrivileges || req.body.userType === "lawyer" || false,
   };
 
-  // ✅ Explicitly set unused type-specific fields to undefined
-  if (req.body.userType !== "staff") {
-    userData.staffDetails = undefined;
-  }
-  if (req.body.userType !== "client") {
-    userData.clientDetails = undefined;
-  }
-  if (req.body.userType !== "lawyer") {
-    userData.lawyerDetails = undefined;
-  }
-  if (!["admin", "super-admin"].includes(req.body.userType)) {
-    userData.adminDetails = undefined;
-  }
-
-  // Add type-specific fields
+  // ✅ Handle primary role based on userType
   switch (userType) {
     case "client":
       userData.role = "client";
@@ -347,22 +348,41 @@ exports.register = catchAsync(async (req, res, next) => {
         billingAddress: req.body.billingAddress,
         referralSource: req.body.referralSource,
       };
+      // Explicitly unset other detail fields
+      userData.staffDetails = undefined;
+      userData.lawyerDetails = undefined;
+      userData.adminDetails = undefined;
       break;
 
     case "staff":
       userData.role = req.body.role || "staff";
-      userData.position = req.body.position;
       userData.staffDetails = {
         department: req.body.department,
         designation: req.body.designation,
         employmentType: req.body.employmentType || "full-time",
         workSchedule: req.body.workSchedule || "9-5",
+        skills: req.body.skills,
       };
+      userData.clientDetails = undefined;
+      
+      // ✅ Handle HR privileges
+      if (req.body.hasHrPrivileges) {
+        if (!userData.additionalRoles.includes("hr")) {
+          userData.additionalRoles.push("hr");
+        }
+      }
+      
+      // ✅ Don't set lawyerDetails unless has lawyer privileges
+      if (!req.body.hasLawyerPrivileges) {
+        userData.lawyerDetails = undefined;
+      }
+      if (!req.body.hasAdminPrivileges) {
+        userData.adminDetails = undefined;
+      }
       break;
 
     case "lawyer":
       userData.role = "lawyer";
-      userData.position = req.body.position || "Associate";
       userData.isLawyer = true;
       userData.lawyerDetails = {
         barNumber: req.body.barNumber,
@@ -374,30 +394,102 @@ exports.register = catchAsync(async (req, res, next) => {
         lawSchool: {
           name: req.body.lawSchoolAttended,
           graduationYear: req.body.lawSchoolGraduationYear,
+          degree: req.body.lawSchoolDegree,
         },
         undergraduateSchool: {
           name: req.body.universityAttended,
           graduationYear: req.body.universityGraduationYear,
+          degree: req.body.universityDegree,
         },
+        isPartner: req.body.isPartner || false,
+        partnershipPercentage: req.body.partnershipPercentage,
       };
       userData.professionalInfo = {
         bio: req.body.bio,
+        education: req.body.education,
+        workExperience: req.body.workExperience,
       };
+      userData.clientDetails = undefined;
+      userData.staffDetails = undefined;
+      
+      // ✅ Handle admin privileges for lawyers
+      if (!req.body.hasAdminPrivileges) {
+        userData.adminDetails = undefined;
+      }
       break;
 
     case "admin":
       userData.role = "admin";
-      userData.position = req.body.position || "Administrator";
       userData.adminDetails = {
         adminLevel: req.body.adminLevel || "firm",
         canManageUsers: req.body.canManageUsers || false,
         canManageCases: req.body.canManageCases || false,
         canManageBilling: req.body.canManageBilling || false,
         canViewReports: req.body.canViewReports || false,
+        systemAccessLevel: req.body.systemAccessLevel || "restricted",
       };
+      userData.clientDetails = undefined;
+      
+      // ✅ Don't set staffDetails or lawyerDetails unless has those privileges
+      if (!req.body.hasLawyerPrivileges) {
+        userData.lawyerDetails = undefined;
+      }
+      break;
+
+    case "super-admin":
+      userData.role = "super-admin";
+      userData.adminDetails = {
+        adminLevel: "firm",
+        canManageUsers: true,
+        canManageCases: true,
+        canManageBilling: true,
+        canViewReports: true,
+        systemAccessLevel: "full",
+      };
+      userData.clientDetails = undefined;
+      userData.staffDetails = undefined;
+      userData.lawyerDetails = undefined;
       break;
   }
 
+  // ✅ Handle additional privileges (multi-role support)
+  
+  // If has lawyer privileges but is not primary lawyer
+  if (req.body.hasLawyerPrivileges && userType !== "lawyer") {
+    userData.isLawyer = true;
+    if (!userData.additionalRoles.includes("lawyer")) {
+      userData.additionalRoles.push("lawyer");
+    }
+    
+    // Set lawyer details
+    userData.lawyerDetails = {
+      barNumber: req.body.barNumber,
+      barAssociation: req.body.barAssociation,
+      yearOfCall: req.body.yearOfCall,
+      practiceAreas: req.body.practiceAreas || [],
+      hourlyRate: req.body.hourlyRate || 0,
+      specialization: req.body.specialization,
+    };
+  }
+
+  // If has admin privileges but is not primary admin
+  if (req.body.hasAdminPrivileges && !["admin", "super-admin"].includes(userType)) {
+    if (!userData.additionalRoles.includes("admin")) {
+      userData.additionalRoles.push("admin");
+    }
+    
+    // Set admin details
+    userData.adminDetails = {
+      adminLevel: "firm",
+      canManageUsers: req.body.canManageUsers || false,
+      canManageCases: req.body.canManageCases || false,
+      canManageBilling: req.body.canManageBilling || false,
+      canViewReports: req.body.canViewReports || false,
+      systemAccessLevel: req.body.systemAccessLevel || "restricted",
+    };
+  }
+
+  // Create user
   const newUser = await User.create(userData);
 
   // Send verification email
@@ -419,12 +511,16 @@ exports.register = catchAsync(async (req, res, next) => {
     const send_from = process.env.SENDINBLUE_EMAIL;
     const reply_to = "noreply@casemaster.ng";
     const template = "verifyEmail";
+    
+    // ✅ Enhanced context with role info
+    const roles = newUser.getEffectiveRoles();
     const context = {
       name: newUser.firstName,
       firmName: req.firm?.name || "Your Firm",
       link: verificationURL,
       companyName: "CaseMaster",
       position: newUser.position || newUser.userType,
+      roles: roles.length > 1 ? roles.join(" & ") : roles[0],
     };
 
     await sendMail(subject, send_to, send_from, reply_to, template, context);
@@ -435,7 +531,19 @@ exports.register = catchAsync(async (req, res, next) => {
   res.status(201).json({
     status: "success",
     message: "User registered successfully. Verification email sent.",
-    data: newUser,
+    data: {
+      user: {
+        id: newUser._id,
+        firstName: newUser.firstName,
+        lastName: newUser.lastName,
+        email: newUser.email,
+        userType: newUser.userType,
+        role: newUser.role,
+        additionalRoles: newUser.additionalRoles,
+        isLawyer: newUser.isLawyer,
+        effectiveRoles: newUser.getEffectiveRoles(),
+      },
+    },
   });
 });
 
@@ -551,6 +659,8 @@ exports.sendLoginCode = catchAsync(async (req, res, next) => {
 
   // Delete any existing tokens
   await Token.deleteMany({ userId: user._id });
+
+  console.log(loginCode)
 
   // Save new token
   await new Token({
@@ -762,11 +872,61 @@ exports.protect = catchAsync(async (req, res, next) => {
  * RESTRICT TO ROLES
  * ===============================
  */
+// controllers/authController.js - UPDATED MIDDLEWARE
+
+/**
+ * ===============================
+ * RESTRICT TO ROLES (UPDATED FOR MULTI-PRIVILEGE)
+ * ===============================
+ */
 exports.restrictTo = (...roles) => {
   return (req, res, next) => {
-    if (!roles.includes(req.user.role)) {
+    // Super admin has access to everything
+    if (req.user.role === "super-admin" || req.user.userType === "super-admin") {
+      return next();
+    }
+
+    // Check primary role
+    if (roles.includes(req.user.role)) {
+      return next();
+    }
+
+    // ✅ NEW: Check additional roles
+    if (req.user.additionalRoles && req.user.additionalRoles.length > 0) {
+      const hasAdditionalRole = req.user.additionalRoles.some((additionalRole) =>
+        roles.includes(additionalRole)
+      );
+      if (hasAdditionalRole) {
+        return next();
+      }
+    }
+
+    // ✅ NEW: Check isLawyer flag if "lawyer" is in required roles
+    if (roles.includes("lawyer") && req.user.isLawyer === true) {
+      return next();
+    }
+
+    return next(
+      new AppError("You do not have permission to perform this action", 403)
+    );
+  };
+};
+
+/**
+ * ===============================
+ * RESTRICT TO USER TYPES (UPDATED)
+ * ===============================
+ */
+exports.restrictToUserTypes = (...userTypes) => {
+  return (req, res, next) => {
+    // Super admin has access to everything
+    if (req.user.userType === "super-admin") {
+      return next();
+    }
+
+    if (!userTypes.includes(req.user.userType)) {
       return next(
-        new AppError("You do not have permission to perform this action", 403),
+        new AppError("You do not have permission to perform this action", 403)
       );
     }
     next();
@@ -775,17 +935,169 @@ exports.restrictTo = (...roles) => {
 
 /**
  * ===============================
- * RESTRICT TO USER TYPES
+ * NEW: CHECK SPECIFIC PRIVILEGE
  * ===============================
  */
-exports.restrictToUserTypes = (...userTypes) => {
+exports.hasPrivilege = (...privileges) => {
   return (req, res, next) => {
-    if (!userTypes.includes(req.user.userType)) {
+    // Super admin has all privileges
+    if (req.user.role === "super-admin" || req.user.userType === "super-admin") {
+      return next();
+    }
+
+    // Check if user has ANY of the required privileges
+    const hasRequiredPrivilege = privileges.some((privilege) => {
+      // Check primary role
+      if (req.user.role === privilege) return true;
+
+      // Check additional roles
+      if (
+        req.user.additionalRoles &&
+        req.user.additionalRoles.includes(privilege)
+      ) {
+        return true;
+      }
+
+      // Check lawyer flag
+      if (privilege === "lawyer" && req.user.isLawyer === true) return true;
+
+      return false;
+    });
+
+    if (!hasRequiredPrivilege) {
       return next(
-        new AppError("You do not have permission to perform this action", 403),
+        new AppError("You do not have permission to perform this action", 403)
       );
     }
+
     next();
+  };
+};
+
+/**
+ * ===============================
+ * NEW: REQUIRE ALL PRIVILEGES
+ * ===============================
+ */
+exports.requireAllPrivileges = (...privileges) => {
+  return (req, res, next) => {
+    // Super admin has all privileges
+    if (req.user.role === "super-admin" || req.user.userType === "super-admin") {
+      return next();
+    }
+
+    // Get all user's effective roles
+    const userRoles = [req.user.role];
+    if (req.user.additionalRoles && req.user.additionalRoles.length > 0) {
+      userRoles.push(...req.user.additionalRoles);
+    }
+    if (req.user.isLawyer) {
+      userRoles.push("lawyer");
+    }
+
+    // Check if user has ALL required privileges
+    const hasAllPrivileges = privileges.every((privilege) =>
+      userRoles.includes(privilege)
+    );
+
+    if (!hasAllPrivileges) {
+      return next(
+        new AppError(
+          "You do not have all required permissions to perform this action",
+          403
+        )
+      );
+    }
+
+    next();
+  };
+};
+
+/**
+ * ===============================
+ * NEW: CHECK ADMIN PERMISSION
+ * ===============================
+ */
+exports.canManageUsers = (req, res, next) => {
+  if (req.user.role === "super-admin") return next();
+
+  if (
+    req.user.adminDetails &&
+    req.user.adminDetails.canManageUsers === true
+  ) {
+    return next();
+  }
+
+  return next(
+    new AppError("You do not have permission to manage users", 403)
+  );
+};
+
+exports.canManageCases = (req, res, next) => {
+  if (req.user.role === "super-admin") return next();
+
+  if (
+    req.user.adminDetails &&
+    req.user.adminDetails.canManageCases === true
+  ) {
+    return next();
+  }
+
+  return next(
+    new AppError("You do not have permission to manage cases", 403)
+  );
+};
+
+exports.canManageBilling = (req, res, next) => {
+  if (req.user.role === "super-admin") return next();
+
+  if (
+    req.user.adminDetails &&
+    req.user.adminDetails.canManageBilling === true
+  ) {
+    return next();
+  }
+
+  return next(
+    new AppError("You do not have permission to manage billing", 403)
+  );
+};
+
+exports.canViewReports = (req, res, next) => {
+  if (req.user.role === "super-admin") return next();
+
+  if (
+    req.user.adminDetails &&
+    req.user.adminDetails.canViewReports === true
+  ) {
+    return next();
+  }
+
+  return next(
+    new AppError("You do not have permission to view reports", 403)
+  );
+};
+
+/**
+ * ===============================
+ * NEW: FLEXIBLE PERMISSION CHECKER
+ * ===============================
+ */
+exports.checkPermission = (permissionChecker) => {
+  return (req, res, next) => {
+    // Super admin bypass
+    if (req.user.role === "super-admin" || req.user.userType === "super-admin") {
+      return next();
+    }
+
+    // Custom permission logic
+    if (permissionChecker(req.user)) {
+      return next();
+    }
+
+    return next(
+      new AppError("You do not have permission to perform this action", 403)
+    );
   };
 };
 

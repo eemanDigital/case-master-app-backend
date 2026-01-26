@@ -1,3 +1,5 @@
+const PaginationServiceFactory = require("../services/PaginationServiceFactory");
+const modelConfigs = require("../config/modelConfigs");
 const Matter = require("../models/matterModel");
 const LitigationDetail = require("../models/litigationDetailModel");
 const CorporateDetail = require("../models/corporateDetailModel");
@@ -9,6 +11,12 @@ const {
 } = require("../models/retainerAndGeneralDetailModel");
 const catchAsync = require("../utils/catchAsync");
 const AppError = require("../utils/appError");
+
+// Initialize pagination service for Matter model
+const matterPaginationService = PaginationServiceFactory.createService(
+  Matter,
+  modelConfigs.Matter,
+);
 
 // Map matter types to their detail models
 const DETAIL_MODEL_MAP = {
@@ -45,7 +53,7 @@ const buildFirmQuery = (req, additionalFilters = {}) => {
 /**
  * Populate detail based on matter type
  */
-const populateDetailByType = (query, matterType) => {
+const populateDetailByType = async (matter) => {
   const detailFieldMap = {
     litigation: "litigationDetail",
     corporate: "corporateDetail",
@@ -55,11 +63,11 @@ const populateDetailByType = (query, matterType) => {
     general: "generalDetail",
   };
 
-  const detailField = detailFieldMap[matterType];
+  const detailField = detailFieldMap[matter.matterType];
   if (detailField) {
-    return query.populate(detailField);
+    await matter.populate(detailField);
   }
-  return query;
+  return matter;
 };
 
 // ============================================
@@ -79,52 +87,74 @@ exports.createMatter = catchAsync(async (req, res, next) => {
     return next(new AppError("Matter type is required", 400));
   }
 
-  // Create the main Matter document
-  const matter = await Matter.create({
-    ...matterData,
-    matterType,
-    firmId: req.firmId,
-    createdBy: req.user._id,
-  });
-
-  // Create type-specific detail document if data provided
-  if (detailData && Object.keys(detailData).length > 0) {
-    const DetailModel = getDetailModel(matterType);
-
-    if (!DetailModel) {
-      return next(new AppError(`Invalid matter type: ${matterType}`, 400));
-    }
-
-    await DetailModel.create({
-      ...detailData,
-      matterId: matter._id,
-      firmId: req.firmId,
-    });
+  // Validate detail model exists
+  const DetailModel = getDetailModel(matterType);
+  if (!DetailModel) {
+    return next(new AppError(`Invalid matter type: ${matterType}`, 400));
   }
 
-  // Fetch the created matter with details
-  const createdMatter = await Matter.findById(matter._id)
-    .populate("accountOfficer", "firstName lastName email photo")
-    .populate("client", "firstName lastName email phone");
+  // Start a session for transaction
+  const session = await Matter.startSession();
+  session.startTransaction();
 
-  // Populate type-specific detail
-  const populatedMatter = await populateDetailByType(
-    Matter.findById(matter._id)
+  try {
+    // Create the main Matter document
+    const matter = await Matter.create(
+      [
+        {
+          ...matterData,
+          matterType,
+          firmId: req.firmId,
+          createdBy: req.user._id,
+        },
+      ],
+      { session },
+    );
+
+    const newMatter = matter[0];
+
+    // Create type-specific detail document if data provided
+    if (detailData && Object.keys(detailData).length > 0) {
+      await DetailModel.create(
+        [
+          {
+            ...detailData,
+            matterId: newMatter._id,
+            firmId: req.firmId,
+            createdBy: req.user._id,
+          },
+        ],
+        { session },
+      );
+    }
+
+    // Commit transaction
+    await session.commitTransaction();
+    session.endSession();
+
+    // Fetch the created matter with details (outside transaction)
+    const populatedMatter = await Matter.findById(newMatter._id)
       .populate("accountOfficer", "firstName lastName email photo")
-      .populate("client", "firstName lastName email phone"),
-    matterType,
-  );
+      .populate("client", "firstName lastName email phone");
 
-  res.status(201).json({
-    status: "success",
-    data: {
-      matter: populatedMatter,
-    },
-  });
+    await populateDetailByType(populatedMatter);
+
+    res.status(201).json({
+      status: "success",
+      data: {
+        matter: populatedMatter,
+      },
+    });
+  } catch (error) {
+    // Abort transaction on error
+    await session.abortTransaction();
+    session.endSession();
+    return next(error);
+  }
 });
 
 // ============================================
-// GET ALL MATTERS
+// GET ALL MATTERS (Using Pagination Service)
 // ============================================
 
 /**
@@ -134,60 +164,67 @@ exports.createMatter = catchAsync(async (req, res, next) => {
  */
 exports.getAllMatters = catchAsync(async (req, res, next) => {
   const {
+    // Standard pagination params
+    page = 1,
+    limit = 50,
+    sort = "-dateOpened",
+    populate,
+    select,
+    debug,
+    includeStats,
+
+    // Matter-specific filters
     matterType,
     status,
     priority,
     client,
     accountOfficer,
+
+    // Advanced search
     search,
-    page = 1,
-    limit = 50,
-    sort = "-dateOpened",
+    startDate,
+    endDate,
+
+    // Other params
+    includeDeleted,
+    onlyDeleted,
   } = req.query;
 
-  // Build filter
-  const filter = buildFirmQuery(req);
+  // Use the pagination service
+  const result = await matterPaginationService.paginate(
+    {
+      page,
+      limit,
+      sort,
+      search,
+      populate,
+      select,
+      debug,
+      includeStats,
+      matterType,
+      status,
+      priority,
+      client,
+      accountOfficer,
+      startDate,
+      endDate,
+      includeDeleted,
+      onlyDeleted,
+    },
+    {}, // customFilter
+    req.firmId, // firmId for multi-tenancy
+  );
 
-  if (matterType) filter.matterType = matterType;
-  if (status) filter.status = status;
-  if (priority) filter.priority = priority;
-  if (client) filter.client = client;
-  if (accountOfficer) filter.accountOfficer = accountOfficer;
-
-  // Text search on title and description
-  if (search) {
-    filter.$or = [
-      { title: { $regex: search, $options: "i" } },
-      { description: { $regex: search, $options: "i" } },
-      { matterNumber: { $regex: search, $options: "i" } },
-    ];
+  // Populate type-specific details for each matter if needed
+  if (populate && populate.includes("details")) {
+    for (const matter of result.data) {
+      await populateDetailByType(matter);
+    }
   }
-
-  // Execute query with pagination
-  const skip = (page - 1) * limit;
-
-  const matters = await Matter.find(filter)
-    .sort(sort)
-    .skip(skip)
-    .limit(Number(limit))
-    .populate("accountOfficer", "firstName lastName email photo")
-    .populate("client", "firstName lastName email phone")
-    .select(
-      "matterNumber title matterType status priority dateOpened client accountOfficer natureOfMatter",
-    );
-
-  // Get total count for pagination
-  const total = await Matter.countDocuments(filter);
 
   res.status(200).json({
     status: "success",
-    results: matters.length,
-    total,
-    page: Number(page),
-    totalPages: Math.ceil(total / limit),
-    data: {
-      matters,
-    },
+    ...result,
   });
 });
 
@@ -202,44 +239,39 @@ exports.getAllMatters = catchAsync(async (req, res, next) => {
  */
 exports.getMatter = catchAsync(async (req, res, next) => {
   const { id } = req.params;
+  const { include } = req.query;
 
-  // Find matter with firm isolation
-  const matter = await Matter.findOne(buildFirmQuery(req, { _id: id }))
+  // Build query with firm isolation
+  let query = Matter.findOne(buildFirmQuery(req, { _id: id }))
     .populate("accountOfficer", "firstName lastName email phone photo role")
     .populate("client", "firstName lastName email phone address")
     .populate("createdBy", "firstName lastName")
     .populate("lastModifiedBy", "firstName lastName");
+
+  // Populate type-specific detail
+  const matter = await query;
 
   if (!matter) {
     return next(new AppError("Matter not found", 404));
   }
 
   // Populate type-specific details
-  await matter.populate(
-    matter.matterType === "litigation"
-      ? "litigationDetail"
-      : matter.matterType === "corporate"
-        ? "corporateDetail"
-        : matter.matterType === "advisory"
-          ? "advisoryDetail"
-          : matter.matterType === "property"
-            ? "propertyDetail"
-            : matter.matterType === "retainer"
-              ? "retainerDetail"
-              : "generalDetail",
-  );
+  await populateDetailByType(matter);
 
-  // Optionally populate related entities (documents, tasks, etc.)
-  if (req.query.include) {
-    const includes = req.query.include.split(",");
+  // Optionally populate related entities
+  if (include) {
+    const includes = include.split(",");
+    const relatedFields = [
+      "documents",
+      "tasks",
+      "events",
+      "invoices",
+      "reports",
+    ];
 
-    for (const include of includes) {
-      if (
-        ["documents", "tasks", "events", "invoices", "reports"].includes(
-          include,
-        )
-      ) {
-        await matter.populate(include);
+    for (const field of includes) {
+      if (relatedFields.includes(field)) {
+        await matter.populate(field);
       }
     }
   }
@@ -266,64 +298,84 @@ exports.updateMatter = catchAsync(async (req, res, next) => {
   const { detailData, ...matterData } = req.body;
 
   // Fields that should not be updated directly
-  const restrictedFields = ["firmId", "matterNumber", "createdBy", "createdAt"];
+  const restrictedFields = [
+    "firmId",
+    "matterNumber",
+    "createdBy",
+    "createdAt",
+    "matterType", // Changing matter type requires special handling
+  ];
+
   restrictedFields.forEach((field) => delete matterData[field]);
 
-  // Find and update matter
-  const matter = await Matter.findOneAndUpdate(
-    buildFirmQuery(req, { _id: id }),
-    {
-      ...matterData,
-      lastModifiedBy: req.user._id,
-    },
-    {
-      new: true,
-      runValidators: true,
-    },
-  );
+  // Find matter first to get current type
+  const existingMatter = await Matter.findOne(buildFirmQuery(req, { _id: id }));
 
-  if (!matter) {
+  if (!existingMatter) {
     return next(new AppError("Matter not found", 404));
   }
 
-  // Update type-specific details if provided
-  if (detailData && Object.keys(detailData).length > 0) {
-    const DetailModel = getDetailModel(matter.matterType);
+  const session = await Matter.startSession();
+  session.startTransaction();
 
-    if (DetailModel) {
-      await DetailModel.findOneAndUpdate(
-        { matterId: matter._id, firmId: req.firmId },
-        detailData,
-        { new: true, runValidators: true, upsert: true },
-      );
+  try {
+    // Update main matter document
+    const matter = await Matter.findOneAndUpdate(
+      buildFirmQuery(req, { _id: id }),
+      {
+        ...matterData,
+        lastModifiedBy: req.user._id,
+        lastActivityDate: Date.now(),
+      },
+      {
+        new: true,
+        runValidators: true,
+        session,
+      },
+    );
+
+    // Update type-specific details if provided
+    if (detailData && Object.keys(detailData).length > 0) {
+      const DetailModel = getDetailModel(existingMatter.matterType);
+
+      if (DetailModel) {
+        await DetailModel.findOneAndUpdate(
+          { matterId: matter._id, firmId: req.firmId },
+          {
+            ...detailData,
+            lastModifiedBy: req.user._id,
+          },
+          {
+            new: true,
+            runValidators: true,
+            upsert: true,
+            session,
+          },
+        );
+      }
     }
+
+    await session.commitTransaction();
+    session.endSession();
+
+    // Fetch updated matter with details
+    const updatedMatter = await Matter.findById(matter._id)
+      .populate("accountOfficer", "firstName lastName email photo")
+      .populate("client", "firstName lastName email phone");
+
+    await populateDetailByType(updatedMatter);
+
+    res.status(200).json({
+      status: "success",
+      data: {
+        matter: updatedMatter,
+      },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    return next(error);
   }
-
-  // Fetch updated matter with details
-  const updatedMatter = await Matter.findById(matter._id)
-    .populate("accountOfficer", "firstName lastName email photo")
-    .populate("client", "firstName lastName email phone");
-
-  await updatedMatter.populate(
-    matter.matterType === "litigation"
-      ? "litigationDetail"
-      : matter.matterType === "corporate"
-        ? "corporateDetail"
-        : matter.matterType === "advisory"
-          ? "advisoryDetail"
-          : matter.matterType === "property"
-            ? "propertyDetail"
-            : matter.matterType === "retainer"
-              ? "retainerDetail"
-              : "generalDetail",
-  );
-
-  res.status(200).json({
-    status: "success",
-    data: {
-      matter: updatedMatter,
-    },
-  });
 });
 
 // ============================================
@@ -338,32 +390,47 @@ exports.updateMatter = catchAsync(async (req, res, next) => {
 exports.deleteMatter = catchAsync(async (req, res, next) => {
   const { id } = req.params;
 
-  const matter = await Matter.findOne(buildFirmQuery(req, { _id: id }));
+  const session = await Matter.startSession();
+  session.startTransaction();
 
-  if (!matter) {
-    return next(new AppError("Matter not found", 404));
+  try {
+    const matter = await Matter.findOne(buildFirmQuery(req, { _id: id }));
+
+    if (!matter) {
+      await session.abortTransaction();
+      session.endSession();
+      return next(new AppError("Matter not found", 404));
+    }
+
+    // Soft delete the matter
+    await matter.softDelete(req.user._id);
+
+    // Soft delete the associated detail
+    const DetailModel = getDetailModel(matter.matterType);
+    if (DetailModel) {
+      await DetailModel.findOneAndUpdate(
+        { matterId: matter._id, firmId: req.firmId },
+        {
+          isDeleted: true,
+          deletedAt: Date.now(),
+          deletedBy: req.user._id,
+        },
+        { session },
+      );
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.status(204).json({
+      status: "success",
+      data: null,
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    return next(error);
   }
-
-  // Soft delete the matter
-  await matter.softDelete(req.user._id);
-
-  // Soft delete the associated detail
-  const DetailModel = getDetailModel(matter.matterType);
-  if (DetailModel) {
-    await DetailModel.findOneAndUpdate(
-      { matterId: matter._id, firmId: req.firmId },
-      {
-        isDeleted: true,
-        deletedAt: Date.now(),
-        deletedBy: req.user._id,
-      },
-    );
-  }
-
-  res.status(204).json({
-    status: "success",
-    data: null,
-  });
 });
 
 // ============================================
@@ -378,41 +445,56 @@ exports.deleteMatter = catchAsync(async (req, res, next) => {
 exports.restoreMatter = catchAsync(async (req, res, next) => {
   const { id } = req.params;
 
-  const matter = await Matter.findOne({
-    firmId: req.firmId,
-    _id: id,
-    isDeleted: true,
-  });
+  const session = await Matter.startSession();
+  session.startTransaction();
 
-  if (!matter) {
-    return next(new AppError("Deleted matter not found", 404));
-  }
+  try {
+    const matter = await Matter.findOne({
+      firmId: req.firmId,
+      _id: id,
+      isDeleted: true,
+    });
 
-  // Restore the matter
-  await matter.restore();
+    if (!matter) {
+      await session.abortTransaction();
+      session.endSession();
+      return next(new AppError("Deleted matter not found", 404));
+    }
 
-  // Restore the associated detail
-  const DetailModel = getDetailModel(matter.matterType);
-  if (DetailModel) {
-    await DetailModel.findOneAndUpdate(
-      { matterId: matter._id, firmId: req.firmId },
-      {
-        isDeleted: false,
-        $unset: { deletedAt: 1, deletedBy: 1 },
+    // Restore the matter
+    await matter.restore();
+
+    // Restore the associated detail
+    const DetailModel = getDetailModel(matter.matterType);
+    if (DetailModel) {
+      await DetailModel.findOneAndUpdate(
+        { matterId: matter._id, firmId: req.firmId },
+        {
+          isDeleted: false,
+          $unset: { deletedAt: 1, deletedBy: 1 },
+        },
+        { session },
+      );
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.status(200).json({
+      status: "success",
+      data: {
+        matter,
       },
-    );
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    return next(error);
   }
-
-  res.status(200).json({
-    status: "success",
-    data: {
-      matter,
-    },
-  });
 });
 
 // ============================================
-// GET MATTER STATISTICS
+// GET MATTER STATISTICS (Enhanced)
 // ============================================
 
 /**
@@ -423,63 +505,135 @@ exports.restoreMatter = catchAsync(async (req, res, next) => {
 exports.getMatterStats = catchAsync(async (req, res, next) => {
   const firmQuery = { firmId: req.firmId, isDeleted: false };
 
-  // Aggregate statistics
-  const stats = await Matter.aggregate([
-    { $match: firmQuery },
-    {
-      $group: {
-        _id: null,
-        totalMatters: { $sum: 1 },
-        activeMatters: {
-          $sum: { $cond: [{ $eq: ["$status", "active"] }, 1, 0] },
+  // Use parallel execution for better performance
+  const [overviewStats, typeStats, statusStats, priorityStats, activityStats] =
+    await Promise.all([
+      // Overview statistics
+      Matter.aggregate([
+        { $match: firmQuery },
+        {
+          $group: {
+            _id: null,
+            totalMatters: { $sum: 1 },
+            activeMatters: {
+              $sum: { $cond: [{ $eq: ["$status", "active"] }, 1, 0] },
+            },
+            pendingMatters: {
+              $sum: { $cond: [{ $eq: ["$status", "pending"] }, 1, 0] },
+            },
+            completedMatters: {
+              $sum: { $cond: [{ $eq: ["$status", "completed"] }, 1, 0] },
+            },
+            closedMatters: {
+              $sum: { $cond: [{ $eq: ["$status", "closed"] }, 1, 0] },
+            },
+            highPriorityMatters: {
+              $sum: { $cond: [{ $eq: ["$priority", "high"] }, 1, 0] },
+            },
+            urgentPriorityMatters: {
+              $sum: { $cond: [{ $eq: ["$priority", "urgent"] }, 1, 0] },
+            },
+            averageAgeDays: {
+              $avg: {
+                $divide: [
+                  { $subtract: [new Date(), "$dateOpened"] },
+                  1000 * 60 * 60 * 24,
+                ],
+              },
+            },
+          },
         },
-        pendingMatters: {
-          $sum: { $cond: [{ $eq: ["$status", "pending"] }, 1, 0] },
-        },
-        completedMatters: {
-          $sum: { $cond: [{ $eq: ["$status", "completed"] }, 1, 0] },
-        },
-        highPriorityMatters: {
-          $sum: { $cond: [{ $in: ["$priority", ["high", "urgent"]] }, 1, 0] },
-        },
-      },
-    },
-  ]);
+      ]),
 
-  // By matter type
-  const byType = await Matter.aggregate([
-    { $match: firmQuery },
-    {
-      $group: {
-        _id: "$matterType",
-        count: { $sum: 1 },
-      },
-    },
-  ]);
+      // Statistics by matter type
+      Matter.aggregate([
+        { $match: firmQuery },
+        {
+          $group: {
+            _id: "$matterType",
+            count: { $sum: 1 },
+            active: {
+              $sum: { $cond: [{ $eq: ["$status", "active"] }, 1, 0] },
+            },
+          },
+        },
+        { $sort: { count: -1 } },
+      ]),
 
-  // By status
-  const byStatus = await Matter.aggregate([
-    { $match: firmQuery },
-    {
-      $group: {
-        _id: "$status",
-        count: { $sum: 1 },
-      },
-    },
-  ]);
+      // Statistics by status
+      Matter.aggregate([
+        { $match: firmQuery },
+        {
+          $group: {
+            _id: "$status",
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { count: -1 } },
+      ]),
+
+      // Statistics by priority
+      Matter.aggregate([
+        { $match: firmQuery },
+        {
+          $group: {
+            _id: "$priority",
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { count: -1 } },
+      ]),
+
+      // Recent activity (last 30 days)
+      Matter.aggregate([
+        {
+          $match: {
+            ...firmQuery,
+            lastActivityDate: {
+              $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+            },
+          },
+        },
+        {
+          $group: {
+            _id: {
+              $dateToString: { format: "%Y-%m-%d", date: "$lastActivityDate" },
+            },
+            count: { $sum: 1 },
+          },
+        },
+        { $sort: { _id: -1 } },
+        { $limit: 10 },
+      ]),
+    ]);
+
+  // Get my matters count
+  const myMattersCount = await Matter.countDocuments({
+    ...firmQuery,
+    accountOfficer: req.user._id,
+  });
 
   res.status(200).json({
     status: "success",
     data: {
-      overview: stats[0] || {},
-      byType,
-      byStatus,
+      overview: overviewStats[0] || {
+        totalMatters: 0,
+        activeMatters: 0,
+        pendingMatters: 0,
+        completedMatters: 0,
+        closedMatters: 0,
+      },
+      byType: typeStats,
+      byStatus: statusStats,
+      byPriority: priorityStats,
+      recentActivity: activityStats,
+      myMatters: myMattersCount,
     },
   });
 });
 
 // ============================================
-// GET MY MATTERS (for logged-in lawyer)
+// GET MY MATTERS (Using Pagination Service)
 // ============================================
 
 /**
@@ -489,43 +643,135 @@ exports.getMatterStats = catchAsync(async (req, res, next) => {
  */
 exports.getMyMatters = catchAsync(async (req, res, next) => {
   const {
-    status,
-    priority,
-    matterType,
     page = 1,
     limit = 50,
     sort = "-dateOpened",
+    populate,
+    select,
+    debug,
+    status,
+    priority,
+    matterType,
+    search,
+    startDate,
+    endDate,
   } = req.query;
 
-  const filter = buildFirmQuery(req, {
+  // Add accountOfficer filter for "my matters"
+  const customFilter = {
     accountOfficer: req.user._id,
-  });
+  };
 
-  if (status) filter.status = status;
-  if (priority) filter.priority = priority;
-  if (matterType) filter.matterType = matterType;
-
-  const skip = (page - 1) * limit;
-
-  const matters = await Matter.find(filter)
-    .sort(sort)
-    .skip(skip)
-    .limit(Number(limit))
-    .populate("client", "firstName lastName email phone")
-    .select(
-      "matterNumber title matterType status priority dateOpened client natureOfMatter lastActivityDate",
-    );
-
-  const total = await Matter.countDocuments(filter);
+  // Use pagination service
+  const result = await matterPaginationService.paginate(
+    {
+      page,
+      limit,
+      sort,
+      populate,
+      select,
+      debug,
+      status,
+      priority,
+      matterType,
+      search,
+      startDate,
+      endDate,
+    },
+    customFilter,
+    req.firmId,
+  );
 
   res.status(200).json({
     status: "success",
-    results: matters.length,
-    total,
-    page: Number(page),
-    totalPages: Math.ceil(total / limit),
+    ...result,
+  });
+});
+
+// ============================================
+// SEARCH MATTERS (Advanced)
+// ============================================
+
+/**
+ * @desc    Advanced search for matters
+ * @route   POST /api/matters/search
+ * @access  Private
+ */
+exports.searchMatters = catchAsync(async (req, res, next) => {
+  const { criteria = {}, options = {} } = req.body;
+
+  // Add firmId to criteria
+  const firmCriteria = {
+    ...criteria,
+    firmId: req.firmId,
+  };
+
+  // Use advanced search from pagination service
+  const result = await matterPaginationService.advancedSearch(
+    firmCriteria,
+    options,
+    req.firmId,
+  );
+
+  res.status(200).json({
+    status: "success",
+    ...result,
+  });
+});
+
+// ============================================
+// BULK OPERATIONS
+// ============================================
+
+/**
+ * @desc    Update multiple matters
+ * @route   PATCH /api/matters/bulk-update
+ * @access  Private (Admin/Lawyer only)
+ */
+exports.bulkUpdateMatters = catchAsync(async (req, res, next) => {
+  const { matterIds, updates } = req.body;
+
+  if (!matterIds || !Array.isArray(matterIds) || matterIds.length === 0) {
+    return next(new AppError("Please provide matter IDs to update", 400));
+  }
+
+  if (!updates || Object.keys(updates).length === 0) {
+    return next(new AppError("Please provide updates to apply", 400));
+  }
+
+  // Restrict certain fields from bulk updates
+  const restrictedFields = [
+    "firmId",
+    "matterNumber",
+    "createdBy",
+    "createdAt",
+    "_id",
+  ];
+
+  restrictedFields.forEach((field) => delete updates[field]);
+
+  // Add last modified info
+  const finalUpdates = {
+    ...updates,
+    lastModifiedBy: req.user._id,
+    lastActivityDate: Date.now(),
+  };
+
+  // Update matters
+  const result = await Matter.updateMany(
+    {
+      _id: { $in: matterIds },
+      firmId: req.firmId,
+    },
+    finalUpdates,
+    { runValidators: true },
+  );
+
+  res.status(200).json({
+    status: "success",
     data: {
-      matters,
+      matchedCount: result.matchedCount,
+      modifiedCount: result.modifiedCount,
     },
   });
 });
