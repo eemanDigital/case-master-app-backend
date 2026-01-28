@@ -99,7 +99,7 @@ router.post(
   updateFirmUserCount,
   uploadUserPhoto,
   resizeUserPhoto,
-  register
+  register,
 );
 
 // ============================================
@@ -110,19 +110,19 @@ router.post(
 router.post(
   "/sendAutomatedEmail",
   hasPrivilege("admin", "hr"), // ✅ Admin OR HR privilege
-  sendAutomatedEmail
+  sendAutomatedEmail,
 );
 
 router.post(
   "/sendAutomatedCustomEmail",
   hasPrivilege("admin", "hr"), // ✅ Admin OR HR privilege
-  sendAutomatedCustomEmail
+  sendAutomatedCustomEmail,
 );
 
 router.post(
   "/sendVerificationEmail/:email",
   hasPrivilege("admin", "super-admin"), // ✅ Admin privilege required
-  sendVerificationEmail
+  sendVerificationEmail,
 );
 
 // ============================================
@@ -141,25 +141,25 @@ router.get("/select-options", getUserSelectOptions);
 router.get(
   "/statistics/general",
   hasPrivilege("admin", "super-admin", "hr"), // ✅ Any of these privileges
-  getUserStatistics
+  getUserStatistics,
 );
 
 router.get(
   "/statistics/staff",
   hasPrivilege("admin", "super-admin", "hr"), // ✅ Any of these privileges
-  getStaffStatistics
+  getStaffStatistics,
 );
 
 router.get(
   "/statistics/clients",
   hasPrivilege("admin", "super-admin", "hr"), // ✅ Any of these privileges
-  getClientStatistics
+  getClientStatistics,
 );
 
 router.get(
   "/statistics/status",
   hasPrivilege("admin", "super-admin", "hr"), // ✅ Any of these privileges
-  getStatusStatistics
+  getStatusStatistics,
 );
 
 // ============================================
@@ -170,19 +170,19 @@ router.get(
 router.get(
   "/type/:userType",
   hasPrivilege("admin", "super-admin", "hr"), // ✅ Any of these privileges
-  getUsersByUserType
+  getUsersByUserType,
 );
 
 router.get(
   "/lawyers/all",
   hasPrivilege("admin", "super-admin", "hr"), // ✅ Any of these privileges
-  getAllLawyers
+  getAllLawyers,
 );
 
 router.get(
   "/clients/all",
   hasPrivilege("admin", "super-admin", "hr"), // ✅ Any of these privileges
-  getAllClients
+  getAllClients,
 );
 
 // ============================================
@@ -193,19 +193,19 @@ router.get(
 router.get(
   "/staff/status/:status",
   hasPrivilege("admin", "super-admin", "hr"), // ✅ Any of these privileges
-  getStaffByStatus
+  getStaffByStatus,
 );
 
 router.get(
   "/clients/status/:status",
   hasPrivilege("admin", "super-admin", "hr"), // ✅ Any of these privileges
-  getClientsByStatus
+  getClientsByStatus,
 );
 
 router.get(
   "/all/status/:status",
   hasPrivilege("admin", "super-admin", "hr"), // ✅ Any of these privileges
-  getAllUsersByStatus
+  getAllUsersByStatus,
 );
 
 // ============================================
@@ -216,19 +216,19 @@ router.get(
 router.get(
   "/role/:role",
   hasPrivilege("admin", "hr"), // ✅ Admin or HR privilege
-  getUsersByRole
+  getUsersByRole,
 );
 
 router.get(
   "/status/:status",
   hasPrivilege("admin", "hr"), // ✅ Admin or HR privilege
-  getUsersByStatus
+  getUsersByStatus,
 );
 
 router.get(
   "/active",
   hasPrivilege("admin", "hr"), // ✅ Admin or HR privilege
-  getActiveUsers
+  getActiveUsers,
 );
 
 // ============================================
@@ -241,7 +241,7 @@ router.get(
   hasPrivilege("admin", "super-admin", "hr"), // ✅ Any of these privileges
   (req, res, next) => {
     return getUsers(req, res, next);
-  }
+  },
 );
 
 router.get(
@@ -250,7 +250,7 @@ router.get(
   (req, res, next) => {
     req.params.status = "active";
     return getStaffByStatus(req, res, next);
-  }
+  },
 );
 
 router.get(
@@ -259,7 +259,7 @@ router.get(
   (req, res, next) => {
     req.params.status = "inactive";
     return getClientsByStatus(req, res, next);
-  }
+  },
 );
 
 // ============================================
@@ -270,8 +270,8 @@ router.get(
 // Get all users - Admin or HR
 router.get(
   "/",
-  hasPrivilege("admin", "hr"), // ✅ Admin or HR privilege
-  getUsers
+  hasPrivilege("super-admin", "admin", "hr"), // ✅ Admin or HR privilege
+  getUsers,
 );
 
 // Get current user - All authenticated users
@@ -287,7 +287,7 @@ router.patch("/updateUser", uploadUserPhoto, resizeUserPhoto, updateUser);
 router.patch(
   "/upgradeUser/:id",
   canManageUsers, // ✅ Checks specific admin permission
-  upgradeUser
+  upgradeUser,
 );
 
 // ============================================
@@ -299,21 +299,21 @@ router.patch(
 router.delete(
   "/delete/:id",
   requireAllPrivileges("super-admin"), // ✅ Must be super-admin
-  deleteUser
+  deleteUser,
 );
 
 // Soft delete - Admin with user management permission
 router.patch(
   "/soft-delete/:id",
   canManageUsers, // ✅ Checks specific admin permission
-  softDeleteUser
+  softDeleteUser,
 );
 
 // Restore deleted user - Admin with user management permission
 router.patch(
   "/restore/:id",
   canManageUsers, // ✅ Checks specific admin permission
-  restoreUser
+  restoreUser,
 );
 
 // ============================================
@@ -332,7 +332,7 @@ router.get(
   }),
   (req, res) => {
     res.json({ message: "Audit logs" });
-  }
+  },
 );
 
 // Example: Multi-role check - Lawyer OR Admin
@@ -341,7 +341,7 @@ router.get(
   hasPrivilege("lawyer", "admin"), // ✅ Anyone with lawyer OR admin privilege
   (req, res) => {
     res.json({ message: "Legal resources" });
-  }
+  },
 );
 
 // Example: Require ALL privileges (rare use case)
@@ -350,7 +350,7 @@ router.post(
   requireAllPrivileges("admin", "super-admin"), // ✅ Must have BOTH
   (req, res) => {
     res.json({ message: "Critical operation performed" });
-  }
+  },
 );
 
 module.exports = router;

@@ -82,6 +82,8 @@ const populateDetailByType = async (matter) => {
 exports.createMatter = catchAsync(async (req, res, next) => {
   const { matterType, detailData, ...matterData } = req.body;
 
+  console.log("Creating matter with data:", req.body);
+
   // Validate matter type
   if (!matterType) {
     return next(new AppError("Matter type is required", 400));
@@ -93,46 +95,26 @@ exports.createMatter = catchAsync(async (req, res, next) => {
     return next(new AppError(`Invalid matter type: ${matterType}`, 400));
   }
 
-  // Start a session for transaction
-  const session = await Matter.startSession();
-  session.startTransaction();
-
   try {
-    // Create the main Matter document
-    const matter = await Matter.create(
-      [
-        {
-          ...matterData,
-          matterType,
-          firmId: req.firmId,
-          createdBy: req.user._id,
-        },
-      ],
-      { session },
-    );
-
-    const newMatter = matter[0];
+    // Create the main Matter document WITHOUT TRANSACTION
+    const newMatter = await Matter.create({
+      ...matterData,
+      matterType,
+      firmId: req.firmId,
+      createdBy: req.user._id,
+    });
 
     // Create type-specific detail document if data provided
     if (detailData && Object.keys(detailData).length > 0) {
-      await DetailModel.create(
-        [
-          {
-            ...detailData,
-            matterId: newMatter._id,
-            firmId: req.firmId,
-            createdBy: req.user._id,
-          },
-        ],
-        { session },
-      );
+      await DetailModel.create({
+        ...detailData,
+        matterId: newMatter._id,
+        firmId: req.firmId,
+        createdBy: req.user._id,
+      });
     }
 
-    // Commit transaction
-    await session.commitTransaction();
-    session.endSession();
-
-    // Fetch the created matter with details (outside transaction)
+    // Fetch the created matter with details
     const populatedMatter = await Matter.findById(newMatter._id)
       .populate("accountOfficer", "firstName lastName email photo")
       .populate("client", "firstName lastName email phone");
@@ -146,13 +128,10 @@ exports.createMatter = catchAsync(async (req, res, next) => {
       },
     });
   } catch (error) {
-    // Abort transaction on error
-    await session.abortTransaction();
-    session.endSession();
+    console.error("Error creating matter:", error);
     return next(error);
   }
 });
-
 // ============================================
 // GET ALL MATTERS (Using Pagination Service)
 // ============================================
