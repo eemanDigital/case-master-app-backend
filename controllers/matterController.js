@@ -1,6 +1,7 @@
 const PaginationServiceFactory = require("../services/PaginationServiceFactory");
 const modelConfigs = require("../config/modelConfigs");
 const Matter = require("../models/matterModel");
+const User = require("../models/userModel");
 const LitigationDetail = require("../models/litigationDetailModel");
 const CorporateDetail = require("../models/corporateDetailModel");
 const AdvisoryDetail = require("../models/advisoryDetailModel");
@@ -82,8 +83,6 @@ const populateDetailByType = async (matter) => {
 exports.createMatter = catchAsync(async (req, res, next) => {
   const { matterType, detailData, ...matterData } = req.body;
 
-  console.log("Creating matter with data:", req.body);
-
   // Validate matter type
   if (!matterType) {
     return next(new AppError("Matter type is required", 400));
@@ -95,26 +94,46 @@ exports.createMatter = catchAsync(async (req, res, next) => {
     return next(new AppError(`Invalid matter type: ${matterType}`, 400));
   }
 
+  // Start a session for transaction
+  // const session = await Matter.startSession();
+  // session.startTransaction();
+
   try {
-    // Create the main Matter document WITHOUT TRANSACTION
-    const newMatter = await Matter.create({
-      ...matterData,
-      matterType,
-      firmId: req.firmId,
-      createdBy: req.user._id,
-    });
+    // Create the main Matter document
+    const matter = await Matter.create(
+      [
+        {
+          ...matterData,
+          matterType,
+          firmId: req.firmId,
+          createdBy: req.user._id,
+        },
+      ],
+      // { session },
+    );
+
+    const newMatter = matter[0];
 
     // Create type-specific detail document if data provided
     if (detailData && Object.keys(detailData).length > 0) {
-      await DetailModel.create({
-        ...detailData,
-        matterId: newMatter._id,
-        firmId: req.firmId,
-        createdBy: req.user._id,
-      });
+      await DetailModel.create(
+        [
+          {
+            ...detailData,
+            matterId: newMatter._id,
+            firmId: req.firmId,
+            createdBy: req.user._id,
+          },
+        ],
+        // { session },
+      );
     }
 
-    // Fetch the created matter with details
+    // Commit transaction
+    // await session.commitTransaction();
+    // session.endSession();
+
+    // Fetch the created matter with details (outside transaction)
     const populatedMatter = await Matter.findById(newMatter._id)
       .populate("accountOfficer", "firstName lastName email photo")
       .populate("client", "firstName lastName email phone");
@@ -128,10 +147,13 @@ exports.createMatter = catchAsync(async (req, res, next) => {
       },
     });
   } catch (error) {
-    console.error("Error creating matter:", error);
+    // Abort transaction on error
+    // await session.abortTransaction();
+    // session.endSession();
     return next(error);
   }
 });
+
 // ============================================
 // GET ALL MATTERS (Using Pagination Service)
 // ============================================
@@ -294,8 +316,8 @@ exports.updateMatter = catchAsync(async (req, res, next) => {
     return next(new AppError("Matter not found", 404));
   }
 
-  const session = await Matter.startSession();
-  session.startTransaction();
+  // const session = await Matter.startSession();
+  // session.startTransaction();
 
   try {
     // Update main matter document
@@ -309,7 +331,7 @@ exports.updateMatter = catchAsync(async (req, res, next) => {
       {
         new: true,
         runValidators: true,
-        session,
+        // session,
       },
     );
 
@@ -328,14 +350,14 @@ exports.updateMatter = catchAsync(async (req, res, next) => {
             new: true,
             runValidators: true,
             upsert: true,
-            session,
+            // session,
           },
         );
       }
     }
 
-    await session.commitTransaction();
-    session.endSession();
+    // await session.commitTransaction();
+    // session.endSession();
 
     // Fetch updated matter with details
     const updatedMatter = await Matter.findById(matter._id)
@@ -351,8 +373,8 @@ exports.updateMatter = catchAsync(async (req, res, next) => {
       },
     });
   } catch (error) {
-    await session.abortTransaction();
-    session.endSession();
+    // await session.abortTransaction();
+    // session.endSession();
     return next(error);
   }
 });
@@ -753,6 +775,969 @@ exports.bulkUpdateMatters = catchAsync(async (req, res, next) => {
       modifiedCount: result.modifiedCount,
     },
   });
+});
+
+// controllers/matterController.js (continuing from your existing code)
+
+// ============================================
+// BULK ASSIGN ACCOUNT OFFICER
+// ============================================
+
+/**
+ * @desc    Bulk assign account officer to multiple matters
+ * @route   POST /api/matters/bulk-assign-officer
+ * @access  Private (Admin/Lawyer only)
+ */
+exports.bulkAssignOfficer = catchAsync(async (req, res, next) => {
+  const { matterIds, officerId } = req.body;
+
+  if (!matterIds || !Array.isArray(matterIds) || matterIds.length === 0) {
+    return next(new AppError("Please provide matter IDs", 400));
+  }
+
+  if (!officerId) {
+    return next(new AppError("Please provide officer ID", 400));
+  }
+
+  // Verify officer exists and belongs to the same firm
+  const officer = await User.findOne({
+    _id: officerId,
+    firmId: req.firmId,
+    $or: [
+      { userType: "lawyer" },
+      { userType: "admin" },
+      { additionalRoles: "admin" },
+    ],
+  });
+
+  if (!officer) {
+    return next(
+      new AppError("Officer not found or not authorized for this role", 404),
+    );
+  }
+
+  const session = await Matter.startSession();
+  session.startTransaction();
+
+  try {
+    // Update matters with new officer
+    const result = await Matter.updateMany(
+      {
+        _id: { $in: matterIds },
+        firmId: req.firmId,
+      },
+      {
+        $addToSet: { accountOfficer: officerId },
+        lastModifiedBy: req.user._id,
+        lastActivityDate: Date.now(),
+        $push: {
+          activityLog: {
+            action: "assigned_officer",
+            user: req.user._id,
+            officer: officerId,
+            timestamp: Date.now(),
+            details: `Assigned to ${officer.firstName} ${officer.lastName}`,
+          },
+        },
+      },
+      { session },
+    );
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.status(200).json({
+      status: "success",
+      data: {
+        matchedCount: result.matchedCount,
+        modifiedCount: result.modifiedCount,
+        officer: {
+          id: officer._id,
+          name: `${officer.firstName} ${officer.lastName}`,
+          email: officer.email,
+        },
+      },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    return next(error);
+  }
+});
+
+// ============================================
+// BULK DELETE MATTERS
+// ============================================
+
+/**
+ * @desc    Bulk delete multiple matters (soft delete)
+ * @route   DELETE /api/matters/bulk-delete
+ * @access  Private (Admin/Lawyer only)
+ */
+exports.bulkDeleteMatters = catchAsync(async (req, res, next) => {
+  const { matterIds } = req.body;
+
+  if (!matterIds || !Array.isArray(matterIds) || matterIds.length === 0) {
+    return next(new AppError("Please provide matter IDs to delete", 400));
+  }
+
+  const session = await Matter.startSession();
+  session.startTransaction();
+
+  try {
+    // Find all matters to be deleted
+    const matters = await Matter.find({
+      _id: { $in: matterIds },
+      firmId: req.firmId,
+      isDeleted: false,
+    }).session(session);
+
+    if (matters.length === 0) {
+      await session.abortTransaction();
+      session.endSession();
+      return next(new AppError("No accessible matters found to delete", 404));
+    }
+
+    // Soft delete all matters
+    const deletionPromises = matters.map((matter) =>
+      matter.softDelete(req.user._id, session),
+    );
+
+    await Promise.all(deletionPromises);
+
+    // Also soft delete associated detail documents
+    const detailDeletionPromises = matters.map(async (matter) => {
+      const DetailModel = getDetailModel(matter.matterType);
+      if (DetailModel) {
+        return DetailModel.findOneAndUpdate(
+          { matterId: matter._id, firmId: req.firmId },
+          {
+            isDeleted: true,
+            deletedAt: Date.now(),
+            deletedBy: req.user._id,
+          },
+          { session },
+        );
+      }
+    });
+
+    await Promise.all(detailDeletionPromises);
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.status(200).json({
+      status: "success",
+      data: {
+        deletedCount: matters.length,
+        deletedMatterIds: matters.map((m) => m._id),
+      },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    return next(error);
+  }
+});
+
+// ============================================
+// EXPORT MATTERS
+// ============================================
+
+/**
+ * @desc    Export matters data in various formats
+ * @route   POST /api/matters/export
+ * @access  Private
+ */
+exports.exportMatters = catchAsync(async (req, res, next) => {
+  const { matterIds, format = "csv" } = req.body;
+
+  if (!matterIds || !Array.isArray(matterIds) || matterIds.length === 0) {
+    return next(new AppError("Please provide matter IDs to export", 400));
+  }
+
+  // Get matters with necessary fields
+  const matters = await Matter.find({
+    _id: { $in: matterIds },
+    firmId: req.firmId,
+    isDeleted: false,
+  })
+    .populate("client", "firstName lastName email phone companyName")
+    .populate("accountOfficer", "firstName lastName email position")
+    .populate("createdBy", "firstName lastName")
+    .lean();
+
+  if (matters.length === 0) {
+    return next(new AppError("No accessible matters found to export", 404));
+  }
+
+  // Format data based on export format
+  let data, contentType, filename;
+
+  switch (format.toLowerCase()) {
+    case "csv":
+      data = convertToCSV(matters);
+      contentType = "text/csv";
+      filename = `matters-export-${Date.now()}.csv`;
+      break;
+
+    case "excel":
+      data = await generateExcel(matters);
+      contentType =
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+      filename = `matters-export-${Date.now()}.xlsx`;
+      break;
+
+    case "pdf":
+      data = await generatePDF(matters);
+      contentType = "application/pdf";
+      filename = `matters-export-${Date.now()}.pdf`;
+      break;
+
+    default:
+      return next(new AppError(`Unsupported export format: ${format}`, 400));
+  }
+
+  // Set headers for file download
+  res.setHeader("Content-Type", contentType);
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+
+  // Send the file data
+  res.send(data);
+});
+
+// ============================================
+// HELPER FUNCTIONS FOR EXPORT
+// ============================================
+
+/**
+ * Convert matters array to CSV format
+ */
+const convertToCSV = (matters) => {
+  const headers = [
+    "Matter Number",
+    "Title",
+    "Client Name",
+    "Client Email",
+    "Client Phone",
+    "Matter Type",
+    "Status",
+    "Priority",
+    "Date Opened",
+    "Expected Closure",
+    "Account Officers",
+    "Category",
+    "Nature",
+    "Estimated Value",
+    "Currency",
+    "Billing Type",
+    "Created By",
+    "Last Modified",
+  ];
+
+  const rows = matters.map((matter) => [
+    matter.matterNumber,
+    matter.title,
+    matter.client ? `${matter.client.firstName} ${matter.client.lastName}` : "",
+    matter.client?.email || "",
+    matter.client?.phone || "",
+    matter.matterType,
+    matter.status,
+    matter.priority,
+    matter.dateOpened ? new Date(matter.dateOpened).toLocaleDateString() : "",
+    matter.expectedClosureDate
+      ? new Date(matter.expectedClosureDate).toLocaleDateString()
+      : "",
+    matter.accountOfficer
+      ?.map((officer) => `${officer.firstName} ${officer.lastName}`)
+      .join(", ") || "",
+    matter.category,
+    matter.natureOfMatter,
+    matter.estimatedValue || "",
+    matter.currency,
+    matter.billingType,
+    matter.createdBy
+      ? `${matter.createdBy.firstName} ${matter.createdBy.lastName}`
+      : "",
+    matter.lastModifiedBy
+      ? new Date(matter.lastModifiedDate).toLocaleDateString()
+      : "",
+  ]);
+
+  // Convert to CSV string
+  const csvContent = [
+    headers.join(","),
+    ...rows.map((row) => row.map((cell) => `"${cell}"`).join(",")),
+  ].join("\n");
+
+  return csvContent;
+};
+
+/**
+ * Generate Excel file from matters
+ */
+const generateExcel = async (matters) => {
+  const ExcelJS = require("exceljs");
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet("Matters");
+
+  // Define columns
+  worksheet.columns = [
+    { header: "Matter Number", key: "matterNumber", width: 15 },
+    { header: "Title", key: "title", width: 30 },
+    { header: "Client", key: "client", width: 25 },
+    { header: "Client Email", key: "clientEmail", width: 25 },
+    { header: "Client Phone", key: "clientPhone", width: 15 },
+    { header: "Type", key: "type", width: 12 },
+    { header: "Status", key: "status", width: 12 },
+    { header: "Priority", key: "priority", width: 10 },
+    { header: "Date Opened", key: "dateOpened", width: 12 },
+    { header: "Expected Closure", key: "expectedClosure", width: 15 },
+    { header: "Account Officers", key: "officers", width: 30 },
+    { header: "Category", key: "category", width: 15 },
+    { header: "Nature", key: "nature", width: 20 },
+    { header: "Estimated Value", key: "value", width: 15 },
+    { header: "Currency", key: "currency", width: 10 },
+    { header: "Billing Type", key: "billing", width: 12 },
+    { header: "Created By", key: "createdBy", width: 20 },
+    { header: "Last Modified", key: "lastModified", width: 12 },
+  ];
+
+  // Add data rows
+  matters.forEach((matter) => {
+    worksheet.addRow({
+      matterNumber: matter.matterNumber,
+      title: matter.title,
+      client: matter.client
+        ? `${matter.client.firstName} ${matter.client.lastName}`
+        : "",
+      clientEmail: matter.client?.email || "",
+      clientPhone: matter.client?.phone || "",
+      type: matter.matterType,
+      status: matter.status,
+      priority: matter.priority,
+      dateOpened: matter.dateOpened
+        ? new Date(matter.dateOpened).toLocaleDateString()
+        : "",
+      expectedClosure: matter.expectedClosureDate
+        ? new Date(matter.expectedClosureDate).toLocaleDateString()
+        : "",
+      officers:
+        matter.accountOfficer
+          ?.map((officer) => `${officer.firstName} ${officer.lastName}`)
+          .join(", ") || "",
+      category: matter.category,
+      nature: matter.natureOfMatter,
+      value: matter.estimatedValue || "",
+      currency: matter.currency,
+      billing: matter.billingType,
+      createdBy: matter.createdBy
+        ? `${matter.createdBy.firstName} ${matter.createdBy.lastName}`
+        : "",
+      lastModified: matter.lastModifiedBy
+        ? new Date(matter.lastModifiedDate).toLocaleDateString()
+        : "",
+    });
+  });
+
+  // Style header row
+  worksheet.getRow(1).font = { bold: true };
+  worksheet.getRow(1).fill = {
+    type: "pattern",
+    pattern: "solid",
+    fgColor: { argb: "FFE0E0E0" },
+  };
+
+  // Write to buffer
+  const buffer = await workbook.xlsx.writeBuffer();
+  return buffer;
+};
+
+/**
+ * Generate PDF from matters
+ */
+const generatePDF = async (matters) => {
+  const PDFDocument = require("pdfkit");
+  const doc = new PDFDocument({ margin: 50 });
+
+  // Create buffer to store PDF
+  const buffers = [];
+  doc.on("data", buffers.push.bind(buffers));
+  doc.on("end", () => {});
+
+  // Add header
+  doc.fontSize(20).text("Matters Export", { align: "center" });
+  doc.moveDown();
+  doc
+    .fontSize(10)
+    .text(
+      `Generated on: ${new Date().toLocaleDateString()} | Total Matters: ${
+        matters.length
+      }`,
+      { align: "center" },
+    );
+  doc.moveDown(2);
+
+  // Create table
+  const table = {
+    headers: [
+      "Matter #",
+      "Title",
+      "Client",
+      "Type",
+      "Status",
+      "Priority",
+      "Date Opened",
+    ],
+    rows: matters.map((matter) => [
+      matter.matterNumber,
+      matter.title.substring(0, 30) + (matter.title.length > 30 ? "..." : ""),
+      matter.client
+        ? `${matter.client.firstName.substring(0, 1)}. ${matter.client.lastName}`
+        : "",
+      matter.matterType.substring(0, 10),
+      matter.status,
+      matter.priority,
+      matter.dateOpened ? new Date(matter.dateOpened).toLocaleDateString() : "",
+    ]),
+  };
+
+  // Simple table drawing
+  const startX = 50;
+  const startY = doc.y;
+  const colWidths = [70, 150, 80, 50, 60, 60, 80];
+  const rowHeight = 20;
+
+  // Draw headers
+  let x = startX;
+  table.headers.forEach((header, i) => {
+    doc.rect(x, startY, colWidths[i], rowHeight).stroke();
+    doc
+      .fontSize(9)
+      .font("Helvetica-Bold")
+      .text(header, x + 5, startY + 5, {
+        width: colWidths[i] - 10,
+        align: "center",
+      });
+    x += colWidths[i];
+  });
+
+  // Draw rows
+  let currentY = startY + rowHeight;
+  table.rows.forEach((row, rowIndex) => {
+    x = startX;
+    row.forEach((cell, colIndex) => {
+      doc.rect(x, currentY, colWidths[colIndex], rowHeight).stroke();
+      doc
+        .fontSize(8)
+        .font("Helvetica")
+        .text(cell, x + 5, currentY + 5, {
+          width: colWidths[colIndex] - 10,
+          align: "center",
+        });
+      x += colWidths[colIndex];
+    });
+    currentY += rowHeight;
+
+    // Add new page if needed
+    if (currentY > 700 && rowIndex < table.rows.length - 1) {
+      doc.addPage();
+      currentY = 50;
+    }
+  });
+
+  // Add summary footer
+  doc.addPage();
+  doc.fontSize(16).text("Export Summary", { align: "center" });
+  doc.moveDown();
+
+  const stats = {
+    "Total Matters": matters.length,
+    "By Type": {},
+    "By Status": {},
+    "By Priority": {},
+  };
+
+  matters.forEach((matter) => {
+    stats["By Type"][matter.matterType] =
+      (stats["By Type"][matter.matterType] || 0) + 1;
+    stats["By Status"][matter.status] =
+      (stats["By Status"][matter.status] || 0) + 1;
+    stats["By Priority"][matter.priority] =
+      (stats["By Priority"][matter.priority] || 0) + 1;
+  });
+
+  Object.entries(stats).forEach(([category, data]) => {
+    doc.fontSize(12).font("Helvetica-Bold").text(`${category}:`);
+    if (typeof data === "object") {
+      Object.entries(data).forEach(([key, value]) => {
+        doc.fontSize(10).font("Helvetica").text(`  ${key}: ${value}`);
+      });
+    } else {
+      doc.fontSize(10).font("Helvetica").text(`  ${data}`);
+    }
+    doc.moveDown();
+  });
+
+  doc.end();
+  return Buffer.concat(buffers);
+};
+
+// ============================================
+// GET MATTERS BY TYPE
+// ============================================
+
+/**
+ * @desc    Get matters by specific type
+ * @route   GET /api/matters/type/:matterType
+ * @access  Private
+ */
+exports.getMattersByType = catchAsync(async (req, res, next) => {
+  const { matterType } = req.params;
+  const {
+    page = 1,
+    limit = 50,
+    sort = "-dateOpened",
+    populate,
+    select,
+    debug,
+    status,
+    priority,
+    search,
+    startDate,
+    endDate,
+  } = req.query;
+
+  // Validate matter type
+  if (!DETAIL_MODEL_MAP[matterType]) {
+    return next(new AppError(`Invalid matter type: ${matterType}`, 400));
+  }
+
+  const customFilter = { matterType };
+
+  const result = await matterPaginationService.paginate(
+    {
+      page,
+      limit,
+      sort,
+      populate,
+      select,
+      debug,
+      status,
+      priority,
+      search,
+      startDate,
+      endDate,
+    },
+    customFilter,
+    req.firmId,
+  );
+
+  res.status(200).json({
+    status: "success",
+    ...result,
+  });
+});
+
+// ============================================
+// GET MATTERS BY STATUS
+// ============================================
+
+/**
+ * @desc    Get matters by specific status
+ * @route   GET /api/matters/status/:status
+ * @access  Private
+ */
+exports.getMattersByStatus = catchAsync(async (req, res, next) => {
+  const { status } = req.params;
+  const {
+    page = 1,
+    limit = 50,
+    sort = "-dateOpened",
+    populate,
+    select,
+    debug,
+    matterType,
+    priority,
+    search,
+    startDate,
+    endDate,
+  } = req.query;
+
+  const customFilter = { status };
+
+  const result = await matterPaginationService.paginate(
+    {
+      page,
+      limit,
+      sort,
+      populate,
+      select,
+      debug,
+      matterType,
+      priority,
+      search,
+      startDate,
+      endDate,
+    },
+    customFilter,
+    req.firmId,
+  );
+
+  res.status(200).json({
+    status: "success",
+    ...result,
+  });
+});
+
+// ============================================
+// GET PENDING MATTERS (Shortcut)
+// ============================================
+
+/**
+ * @desc    Get all pending matters
+ * @route   GET /api/matters/pending
+ * @access  Private
+ */
+exports.getPendingMatters = catchAsync(async (req, res, next) => {
+  const {
+    page = 1,
+    limit = 50,
+    sort = "-dateOpened",
+    populate,
+    select,
+    debug,
+    matterType,
+    priority,
+    search,
+    startDate,
+    endDate,
+  } = req.query;
+
+  const customFilter = { status: "pending" };
+
+  const result = await matterPaginationService.paginate(
+    {
+      page,
+      limit,
+      sort,
+      populate,
+      select,
+      debug,
+      matterType,
+      priority,
+      search,
+      startDate,
+      endDate,
+    },
+    customFilter,
+    req.firmId,
+  );
+
+  res.status(200).json({
+    status: "success",
+    ...result,
+  });
+});
+
+// ============================================
+// GET URGENT MATTERS (Shortcut)
+// ============================================
+
+/**
+ * @desc    Get all urgent/high priority matters
+ * @route   GET /api/matters/urgent
+ * @access  Private
+ */
+exports.getUrgentMatters = catchAsync(async (req, res, next) => {
+  const {
+    page = 1,
+    limit = 50,
+    sort = "-dateOpened",
+    populate,
+    select,
+    debug,
+    matterType,
+    status,
+    search,
+    startDate,
+    endDate,
+  } = req.query;
+
+  const customFilter = {
+    $or: [{ priority: "urgent" }, { priority: "high" }],
+  };
+
+  const result = await matterPaginationService.paginate(
+    {
+      page,
+      limit,
+      sort,
+      populate,
+      select,
+      debug,
+      matterType,
+      status,
+      search,
+      startDate,
+      endDate,
+    },
+    customFilter,
+    req.firmId,
+  );
+
+  res.status(200).json({
+    status: "success",
+    ...result,
+  });
+});
+
+// ============================================
+// GET RECENT ACTIVITY
+// ============================================
+
+/**
+ * @desc    Get recently updated matters
+ * @route   GET /api/matters/recent-activity
+ * @access  Private
+ */
+exports.getRecentActivity = catchAsync(async (req, res, next) => {
+  const { days = 7, limit = 10 } = req.query;
+
+  const cutoffDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+  const recentMatters = await Matter.find({
+    firmId: req.firmId,
+    isDeleted: false,
+    lastActivityDate: { $gte: cutoffDate },
+  })
+    .sort("-lastActivityDate")
+    .limit(parseInt(limit))
+    .populate("client", "firstName lastName")
+    .populate("lastModifiedBy", "firstName lastName")
+    .select("title matterNumber matterType status lastActivityDate");
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      matters: recentMatters,
+      timeframe: `${days} days`,
+    },
+  });
+});
+
+// ============================================
+// VALIDATE MATTER NUMBER
+// ============================================
+
+/**
+ * @desc    Check if matter number is unique
+ * @route   GET /api/matters/validate-matter-number/:matterNumber
+ * @access  Private (Admin/Lawyer/HR only)
+ */
+exports.validateMatterNumber = catchAsync(async (req, res, next) => {
+  const { matterNumber } = req.params;
+
+  const existingMatter = await Matter.findOne({
+    matterNumber,
+    firmId: req.firmId,
+    isDeleted: false,
+  });
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      isAvailable: !existingMatter,
+      message: existingMatter
+        ? "Matter number already exists"
+        : "Matter number is available",
+    },
+  });
+});
+
+// ============================================
+// GET MATTER TIMELINE
+// ============================================
+
+/**
+ * @desc    Get matter activity timeline
+ * @route   GET /api/matters/:id/timeline
+ * @access  Private
+ */
+exports.getMatterTimeline = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+
+  const matter = await Matter.findOne({
+    _id: id,
+    firmId: req.firmId,
+    isDeleted: false,
+  }).select("activityLog title matterNumber");
+
+  if (!matter) {
+    return next(new AppError("Matter not found", 404));
+  }
+
+  // Sort activity log by timestamp (most recent first)
+  const timeline = (matter.activityLog || []).sort(
+    (a, b) => new Date(b.timestamp) - new Date(a.timestamp),
+  );
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      matter: {
+        _id: matter._id,
+        title: matter.title,
+        matterNumber: matter.matterNumber,
+      },
+      timeline,
+    },
+  });
+});
+
+// ============================================
+// ADD ACTIVITY LOG ENTRY
+// ============================================
+
+/**
+ * @desc    Add activity log entry to matter
+ * @route   POST /api/matters/:id/activity
+ * @access  Private
+ */
+exports.addActivityLog = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+  const { action, details } = req.body;
+
+  if (!action || !details) {
+    return next(new AppError("Action and details are required", 400));
+  }
+
+  const matter = await Matter.findOneAndUpdate(
+    {
+      _id: id,
+      firmId: req.firmId,
+      isDeleted: false,
+    },
+    {
+      $push: {
+        activityLog: {
+          action,
+          details,
+          user: req.user._id,
+          timestamp: Date.now(),
+        },
+      },
+      lastActivityDate: Date.now(),
+    },
+    { new: true, runValidators: true },
+  ).select("title matterNumber activityLog");
+
+  if (!matter) {
+    return next(new AppError("Matter not found", 404));
+  }
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      matter,
+      activityAdded: matter.activityLog[matter.activityLog.length - 1],
+    },
+  });
+});
+
+// ============================================
+// MIDDLEWARE FUNCTIONS
+// ============================================
+
+/**
+ * Middleware to check if user has access to matter
+ */
+exports.checkMatterAccess = catchAsync(async (req, res, next) => {
+  const { id } = req.params;
+
+  const matter = await Matter.findOne({
+    _id: id,
+    firmId: req.firmId,
+    isDeleted: false,
+  });
+
+  if (!matter) {
+    return next(new AppError("Matter not found or no access", 404));
+  }
+
+  // Check if user is assigned as account officer or is admin
+  const isAssignedOfficer = matter.accountOfficer.some(
+    (officerId) => officerId.toString() === req.user._id.toString(),
+  );
+  const isAdmin =
+    req.user.userType === "admin" ||
+    req.user.additionalRoles?.includes("admin");
+
+  if (!isAssignedOfficer && !isAdmin) {
+    return next(
+      new AppError("You don't have permission to access this matter", 403),
+    );
+  }
+
+  req.matter = matter;
+  next();
+});
+
+/**
+ * Middleware to validate matter type
+ */
+exports.validateMatterType = catchAsync(async (req, res, next) => {
+  const { matterType } = req.body;
+
+  if (matterType && !DETAIL_MODEL_MAP[matterType]) {
+    return next(new AppError(`Invalid matter type: ${matterType}`, 400));
+  }
+
+  next();
+});
+
+/**
+ * Middleware to check bulk operation limits
+ */
+exports.checkBulkOperationLimit = catchAsync(async (req, res, next) => {
+  const { matterIds } = req.body;
+
+  if (!matterIds || !Array.isArray(matterIds)) {
+    return next(new AppError("matterIds must be an array", 400));
+  }
+
+  if (matterIds.length === 0) {
+    return next(new AppError("No matters selected for bulk operation", 400));
+  }
+
+  // Set reasonable limit (adjust as needed)
+  const MAX_BULK_OPERATION = 100;
+  if (matterIds.length > MAX_BULK_OPERATION) {
+    return next(
+      new AppError(
+        `Cannot process more than ${MAX_BULK_OPERATION} matters at once`,
+        400,
+      ),
+    );
+  }
+
+  next();
+});
+
+/**
+ * Middleware to log bulk operation
+ */
+exports.logBulkOperation = catchAsync(async (req, res, next) => {
+  const { matterIds } = req.body;
+  const action = req.originalUrl.split("/").pop(); // Extract action from URL
+
+  console.log(
+    `[${new Date().toISOString()}] Bulk ${action} by user ${
+      req.user._id
+    }: ${matterIds.length} matters`,
+  );
+
+  next();
 });
 
 module.exports = exports;
