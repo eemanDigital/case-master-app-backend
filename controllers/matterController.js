@@ -1158,129 +1158,89 @@ const generateExcel = async (matters) => {
  */
 const generatePDF = async (matters) => {
   const PDFDocument = require("pdfkit");
-  const doc = new PDFDocument({ margin: 50 });
 
-  // Create buffer to store PDF
-  const buffers = [];
-  doc.on("data", buffers.push.bind(buffers));
-  doc.on("end", () => {});
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ margin: 50, size: "A4" });
+    const buffers = [];
 
-  // Add header
-  doc.fontSize(20).text("Matters Export", { align: "center" });
-  doc.moveDown();
-  doc
-    .fontSize(10)
-    .text(
-      `Generated on: ${new Date().toLocaleDateString()} | Total Matters: ${
-        matters.length
-      }`,
-      { align: "center" },
-    );
-  doc.moveDown(2);
+    doc.on("data", (chunk) => buffers.push(chunk));
+    doc.on("end", () => resolve(Buffer.concat(buffers)));
+    doc.on("error", (err) => reject(err));
 
-  // Create table
-  const table = {
-    headers: [
+    // 1. Header
+    doc.fontSize(20).text("Matters Export", { align: "center" });
+    doc.moveDown();
+    doc
+      .fontSize(10)
+      .text(
+        `Generated on: ${new Date().toLocaleDateString()} | Total: ${matters.length}`,
+        { align: "center" },
+      );
+    doc.moveDown(2);
+
+    // 2. Table Settings
+    const startX = 50;
+    const colWidths = [60, 140, 80, 60, 60, 50, 60];
+    const headers = [
       "Matter #",
       "Title",
       "Client",
       "Type",
       "Status",
       "Priority",
-      "Date Opened",
-    ],
-    rows: matters.map((matter) => [
-      matter.matterNumber,
-      matter.title.substring(0, 30) + (matter.title.length > 30 ? "..." : ""),
-      matter.client
-        ? `${matter.client.firstName.substring(0, 1)}. ${matter.client.lastName}`
-        : "",
-      matter.matterType.substring(0, 10),
-      matter.status,
-      matter.priority,
-      matter.dateOpened ? new Date(matter.dateOpened).toLocaleDateString() : "",
-    ]),
-  };
+      "Date",
+    ];
+    let currentY = doc.y;
 
-  // Simple table drawing
-  const startX = 50;
-  const startY = doc.y;
-  const colWidths = [70, 150, 80, 50, 60, 60, 80];
-  const rowHeight = 20;
+    // Helper to draw a row
+    const drawRow = (rowArray, isHeader = false) => {
+      let x = startX;
+      const rowHeight = 25;
 
-  // Draw headers
-  let x = startX;
-  table.headers.forEach((header, i) => {
-    doc.rect(x, startY, colWidths[i], rowHeight).stroke();
-    doc
-      .fontSize(9)
-      .font("Helvetica-Bold")
-      .text(header, x + 5, startY + 5, {
-        width: colWidths[i] - 10,
-        align: "center",
+      // Check for page overflow
+      if (currentY > 750) {
+        doc.addPage();
+        currentY = 50;
+      }
+
+      rowArray.forEach((text, i) => {
+        doc.rect(x, currentY, colWidths[i], rowHeight).stroke();
+        doc
+          .fontSize(isHeader ? 9 : 8)
+          .font(isHeader ? "Helvetica-Bold" : "Helvetica")
+          .text(text || "", x + 5, currentY + 7, {
+            width: colWidths[i] - 10,
+            lineBreak: false,
+          });
+        x += colWidths[i];
       });
-    x += colWidths[i];
-  });
 
-  // Draw rows
-  let currentY = startY + rowHeight;
-  table.rows.forEach((row, rowIndex) => {
-    x = startX;
-    row.forEach((cell, colIndex) => {
-      doc.rect(x, currentY, colWidths[colIndex], rowHeight).stroke();
-      doc
-        .fontSize(8)
-        .font("Helvetica")
-        .text(cell, x + 5, currentY + 5, {
-          width: colWidths[colIndex] - 10,
-          align: "center",
-        });
-      x += colWidths[colIndex];
+      currentY += rowHeight;
+    };
+
+    // 3. Render Header Row
+    drawRow(headers, true);
+
+    // 4. Render Data Rows
+    matters.forEach((matter) => {
+      const rowData = [
+        matter.matterNumber,
+        matter.title?.substring(0, 25),
+        matter.client
+          ? `${matter.client.firstName} ${matter.client.lastName}`
+          : "N/A",
+        matter.matterType,
+        matter.status,
+        matter.priority,
+        matter.dateOpened
+          ? new Date(matter.dateOpened).toLocaleDateString()
+          : "",
+      ];
+      drawRow(rowData);
     });
-    currentY += rowHeight;
 
-    // Add new page if needed
-    if (currentY > 700 && rowIndex < table.rows.length - 1) {
-      doc.addPage();
-      currentY = 50;
-    }
+    doc.end();
   });
-
-  // Add summary footer
-  doc.addPage();
-  doc.fontSize(16).text("Export Summary", { align: "center" });
-  doc.moveDown();
-
-  const stats = {
-    "Total Matters": matters.length,
-    "By Type": {},
-    "By Status": {},
-    "By Priority": {},
-  };
-
-  matters.forEach((matter) => {
-    stats["By Type"][matter.matterType] =
-      (stats["By Type"][matter.matterType] || 0) + 1;
-    stats["By Status"][matter.status] =
-      (stats["By Status"][matter.status] || 0) + 1;
-    stats["By Priority"][matter.priority] =
-      (stats["By Priority"][matter.priority] || 0) + 1;
-  });
-
-  Object.entries(stats).forEach(([category, data]) => {
-    doc.fontSize(12).font("Helvetica-Bold").text(`${category}:`);
-    if (typeof data === "object") {
-      Object.entries(data).forEach(([key, value]) => {
-        doc.fontSize(10).font("Helvetica").text(`  ${key}: ${value}`);
-      });
-    } else {
-      doc.fontSize(10).font("Helvetica").text(`  ${data}`);
-    }
-    doc.moveDown();
-  });
-
-  doc.end();
-  return Buffer.concat(buffers);
 };
 
 // ============================================
