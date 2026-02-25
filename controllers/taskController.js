@@ -1132,6 +1132,7 @@ exports.submitTaskForReview = catchAsync(async (req, res, next) => {
 });
 
 // Review task and mark as completed (Task Giver action)
+// NOTE: This reviews the task as a whole (approve/reject the submitted work)
 exports.reviewTask = catchAsync(async (req, res, next) => {
   const taskId = req.params.taskId;
   const { approve, reviewComment, rating, sendNotification = true } = req.body;
@@ -1154,16 +1155,31 @@ exports.reviewTask = catchAsync(async (req, res, next) => {
     (assignee) =>
       assignee.assignedBy && assignee.assignedBy.toString() === req.user.id
   );
+  const isAdmin = ["admin", "super-admin"].includes(req.user.role);
 
-  if (!isCreator && !isAssignedBy) {
+  if (!isCreator && !isAssignedBy && !isAdmin) {
     return next(
       new AppError("Only task creator/assigner can review tasks", 403)
     );
   }
 
-  // Check if task is in review status
-  if (task.status !== "under-review") {
-    return next(new AppError("Task is not currently under review", 400));
+  // Validate status transition
+  const validTransitions = {
+    "under-review": ["completed", "rejected"],
+    "in-progress": ["under-review", "pending"],
+    rejected: ["in-progress", "under-review"],
+  };
+
+  const allowedNextStatuses = validTransitions[task.status];
+  const targetStatus = approve ? "completed" : "rejected";
+
+  if (!allowedNextStatuses?.includes(targetStatus)) {
+    return next(
+      new AppError(
+        `Cannot ${approve ? "approve" : "reject"} task from ${task.status} status. Task must be under review.`,
+        400
+      )
+    );
   }
 
   // Update task based on review decision
@@ -1179,14 +1195,16 @@ exports.reviewTask = catchAsync(async (req, res, next) => {
     task.reviewComment = reviewComment;
     task.rating = rating;
 
-    // Mark the latest response as approved
-    if (task.taskResponses.length > 0) {
-      const latestResponse = task.taskResponses[task.taskResponses.length - 1];
-      latestResponse.approved = true;
-      latestResponse.reviewedBy = req.user.id;
-      latestResponse.reviewedAt = new Date();
-      latestResponse.reviewComment = reviewComment;
-    }
+    // Mark all in-progress responses as completed
+    task.taskResponses.forEach((response) => {
+      if (response.status === "in-progress" || response.status === "under-review") {
+        response.status = "completed";
+        response.completionPercentage = 100;
+        response.reviewedBy = req.user.id;
+        response.reviewedAt = new Date();
+        response.reviewComment = reviewComment;
+      }
+    });
   } else {
     // Reject and return for revision
     task.status = "rejected";
@@ -1194,14 +1212,15 @@ exports.reviewTask = catchAsync(async (req, res, next) => {
     task.reviewedAt = new Date();
     task.reviewComment = reviewComment;
 
-    // Mark the latest response as rejected
-    if (task.taskResponses.length > 0) {
-      const latestResponse = task.taskResponses[task.taskResponses.length - 1];
-      latestResponse.approved = false;
-      latestResponse.reviewedBy = req.user.id;
-      latestResponse.reviewedAt = new Date();
-      latestResponse.reviewComment = reviewComment;
-    }
+    // Mark pending responses as needs-review
+    task.taskResponses.forEach((response) => {
+      if (response.status === "in-progress" || response.status === "under-review") {
+        response.status = "needs-review";
+        response.reviewedBy = req.user.id;
+        response.reviewedAt = new Date();
+        response.reviewComment = reviewComment;
+      }
+    });
   }
 
   // Create history entry
@@ -1414,5 +1433,327 @@ exports.getTaskHistory = catchAsync(async (req, res, next) => {
     status: "success",
     results: history.length,
     data: history,
+  });
+});
+
+// ============================================================
+// REMINDER MANAGEMENT
+// ============================================================
+
+// Create reminder for task
+exports.createReminder = catchAsync(async (req, res, next) => {
+  const taskId = req.params.taskId;
+  const { message, scheduledFor } = req.body;
+
+  if (!message || !scheduledFor) {
+    return next(new AppError("Message and scheduledFor are required", 400));
+  }
+
+  const scheduledDate = new Date(scheduledFor);
+  if (scheduledDate <= new Date()) {
+    return next(new AppError("Scheduled time must be in the future", 400));
+  }
+
+  const task = await Task.findOne({ _id: taskId, firmId: req.firmId });
+  if (!task) {
+    return next(new AppError("Task not found", 404));
+  }
+
+  // Check authorization - task creator or assignee can create reminders
+  const isAssigned = task.isUserAssigned(req.user.id);
+  const isCreator = task.createdBy.toString() === req.user.id;
+  const isAdmin = ["admin", "super-admin"].includes(req.user.role);
+
+  if (!isAssigned && !isCreator && !isAdmin) {
+    return next(new AppError("Not authorized to create reminders for this task", 403));
+  }
+
+  const reminder = {
+    message: message.substring(0, 150),
+    scheduledFor: scheduledDate,
+    sender: req.user.id,
+    timestamp: new Date(),
+    isSent: false,
+  };
+
+  task.reminders.push(reminder);
+  await task.save();
+
+  const createdReminder = task.reminders[task.reminders.length - 1];
+  
+  // Populate sender for response
+  await task.populate("reminders.sender", "firstName lastName email");
+
+  res.status(201).json({
+    status: "success",
+    message: "Reminder created successfully",
+    data: {
+      _id: createdReminder._id,
+      message: createdReminder.message,
+      scheduledFor: createdReminder.scheduledFor,
+      isSent: createdReminder.isSent,
+      sender: task.reminders.find(r => r._id.toString() === createdReminder._id.toString())?.sender,
+    },
+  });
+});
+
+// Get reminders for task
+exports.getReminders = catchAsync(async (req, res, next) => {
+  const taskId = req.params.taskId;
+
+  const task = await Task.findOne({ _id: taskId, firmId: req.firmId })
+    .populate("reminders.sender", "firstName lastName email");
+
+  if (!task) {
+    return next(new AppError("Task not found", 404));
+  }
+
+  res.status(200).json({
+    status: "success",
+    results: task.reminders.length,
+    data: task.reminders,
+  });
+});
+
+// Delete reminder
+exports.deleteReminder = catchAsync(async (req, res, next) => {
+  const { taskId, reminderId } = req.params;
+
+  const task = await Task.findOne({ _id: taskId, firmId: req.firmId });
+  if (!task) {
+    return next(new AppError("Task not found", 404));
+  }
+
+  const reminder = task.reminders.id(reminderId);
+  if (!reminder) {
+    return next(new AppError("Reminder not found", 404));
+  }
+
+  // Check authorization - only sender or admin can delete
+  const isSender = reminder.sender?.toString() === req.user.id;
+  const isAdmin = ["admin", "super-admin"].includes(req.user.role);
+
+  if (!isSender && !isAdmin) {
+    return next(new AppError("Not authorized to delete this reminder", 403));
+  }
+
+  // Only allow deletion if not already sent
+  if (reminder.isSent) {
+    return next(new AppError("Cannot delete a reminder that has already been sent", 400));
+  }
+
+  task.reminders.pull({ _id: reminderId });
+  await task.save();
+
+  res.status(200).json({
+    status: "success",
+    message: "Reminder deleted successfully",
+    data: null,
+  });
+});
+
+// ============================================================
+// TASK DEPENDENCY MANAGEMENT
+// ============================================================
+
+// Get task dependencies
+exports.getDependencies = catchAsync(async (req, res, next) => {
+  const taskId = req.params.taskId;
+
+  const task = await Task.findOne({ _id: taskId, firmId: req.firmId })
+    .populate("dependencies", "title status dueDate taskPriority category");
+
+  if (!task) {
+    return next(new AppError("Task not found", 404));
+  }
+
+  res.status(200).json({
+    status: "success",
+    results: task.dependencies.length,
+    data: task.dependencies,
+  });
+});
+
+// Add task dependency
+exports.addDependency = catchAsync(async (req, res, next) => {
+  const taskId = req.params.taskId;
+  const { dependentTaskId } = req.body;
+
+  if (!dependentTaskId) {
+    return next(new AppError("dependentTaskId is required", 400));
+  }
+
+  if (taskId === dependentTaskId) {
+    return next(new AppError("A task cannot depend on itself", 400));
+  }
+
+  const [task, dependentTask] = await Promise.all([
+    Task.findOne({ _id: taskId, firmId: req.firmId }),
+    Task.findOne({ _id: dependentTaskId, firmId: req.firmId }),
+  ]);
+
+  if (!task) {
+    return next(new AppError("Task not found", 404));
+  }
+
+  if (!dependentTask) {
+    return next(new AppError("Dependent task not found", 404));
+  }
+
+  // Check for circular dependency
+  const checkCircularDependency = async (taskId, targetId, visited = new Set()) => {
+    if (visited.has(targetId)) return false;
+    visited.add(targetId);
+
+    const targetTask = await Task.findById(targetId);
+    if (!targetTask) return false;
+
+    for (const depId of targetTask.dependencies || []) {
+      if (depId.toString() === taskId.toString()) return true;
+      if (await checkCircularDependency(taskId, depId, visited)) return true;
+    }
+    return false;
+  };
+
+  if (await checkCircularDependency(taskId, dependentTaskId)) {
+    return next(new AppError("Cannot add dependency: would create circular reference", 400));
+  }
+
+  // Check if already exists
+  if (task.dependencies.includes(dependentTaskId)) {
+    return next(new AppError("This dependency already exists", 400));
+  }
+
+  task.dependencies.push(dependentTaskId);
+  await task.save();
+
+  await task.populate("dependencies", "title status dueDate taskPriority category");
+
+  res.status(201).json({
+    status: "success",
+    message: "Dependency added successfully",
+    data: task.dependencies,
+  });
+});
+
+// Remove task dependency
+exports.removeDependency = catchAsync(async (req, res, next) => {
+  const { taskId, dependencyId } = req.params;
+
+  const task = await Task.findOne({ _id: taskId, firmId: req.firmId });
+  if (!task) {
+    return next(new AppError("Task not found", 404));
+  }
+
+  if (!task.dependencies.includes(dependencyId)) {
+    return next(new AppError("Dependency not found", 404));
+  }
+
+  task.dependencies.pull(dependencyId);
+  await task.save();
+
+  await task.populate("dependencies", "title status dueDate taskPriority category");
+
+  res.status(200).json({
+    status: "success",
+    message: "Dependency removed successfully",
+    data: task.dependencies,
+  });
+});
+
+// Get available tasks for dependency (excluding self and existing dependencies)
+exports.getAvailableDependencies = catchAsync(async (req, res, next) => {
+  const taskId = req.params.taskId;
+
+  const task = await Task.findOne({ _id: taskId, firmId: req.firmId });
+  if (!task) {
+    return next(new AppError("Task not found", 404));
+  }
+
+  // Get all tasks except self, already linked dependencies, and completed tasks
+  const excludeIds = [taskId, ...(task.dependencies || [])];
+
+  const availableTasks = await Task.find({
+    firmId: req.firmId,
+    _id: { $nin: excludeIds },
+    status: { $nin: ["completed", "cancelled"] },
+    isDeleted: { $ne: true },
+  })
+    .select("title status dueDate taskPriority category matter")
+    .populate("matter", "matterNumber title")
+    .sort({ dueDate: 1 })
+    .limit(50);
+
+  res.status(200).json({
+    status: "success",
+    results: availableTasks.length,
+    data: availableTasks,
+  });
+});
+
+// ============================================================
+// TASK UPDATE (Enhanced with history)
+// ============================================================
+
+// Enhanced update with history tracking
+exports.updateTaskEnhanced = catchAsync(async (req, res, next) => {
+  const taskId = req.params.taskId;
+  const updates = req.body;
+
+  const task = await Task.findOne({ _id: taskId, firmId: req.firmId });
+  if (!task) {
+    return next(new AppError("Task not found", 404));
+  }
+
+  // Track changes for history
+  const changes = {};
+  const fieldsToTrack = [
+    "title", "description", "instruction", "dueDate", "startDate",
+    "taskPriority", "status", "category", "estimatedEffort", "matter",
+    "matterType", "litigationDetailId", "customCaseReference"
+  ];
+
+  for (const field of fieldsToTrack) {
+    if (updates[field] !== undefined && updates[field] !== task[field]) {
+      changes[field] = { from: task[field], to: updates[field] };
+    }
+  }
+
+  // Apply updates
+  const allowedUpdates = [
+    "title", "description", "instruction", "dueDate", "startDate",
+    "taskPriority", "status", "category", "estimatedEffort", "matter",
+    "matterType", "litigationDetailId", "customCaseReference", "tags"
+  ];
+
+  for (const key of allowedUpdates) {
+    if (updates[key] !== undefined) {
+      task[key] = updates[key];
+    }
+  }
+
+  // Add history entry if there were changes
+  if (Object.keys(changes).length > 0) {
+    await task.addHistoryEntry({
+      action: "updated",
+      description: "Task details updated",
+      by: req.user.id,
+      changes,
+    });
+  }
+
+  await task.save();
+
+  const updatedTask = await Task.findOne({ _id: taskId, firmId: req.firmId })
+    .populate("createdBy", "firstName lastName email position")
+    .populate("assignees.user", "firstName lastName email position")
+    .populate("matter", "matterNumber title matterType status")
+    .populate("litigationDetailId", "suitNo courtName courtNo")
+    .populate("referenceDocuments");
+
+  res.status(200).json({
+    status: "success",
+    message: "Task updated successfully",
+    data: updatedTask,
   });
 });
