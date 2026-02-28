@@ -297,68 +297,125 @@ exports.restoreLitigationDetails = catchAsync(async (req, res, next) => {
 });
 
 // ============================================
-// GET UPCOMING HEARINGS (WITH PAGINATION)
+// GET UPCOMING HEARINGS
+// Supports: this-week, next-week, this-month, all (today+week+next+month)
+// Also supports legacy: limit, days parameters
 // ============================================
 
 exports.getUpcomingHearings = catchAsync(async (req, res, next) => {
-  const { limit = 50, days = 30 } = req.query;
+  const { range, limit = 50, days = 30 } = req.query;
+  const firmId = req.firmId;
+  const today = dayjs().startOf("day");
 
-  const now = new Date();
-  const futureDate = new Date();
-  futureDate.setDate(futureDate.getDate() + parseInt(days));
+  // Calculate date ranges
+  const thisWeekStart = today.startOf("week");
+  const thisWeekEnd = today.endOf("week");
+  const nextWeekStart = today.add(1, "week").startOf("week");
+  const nextWeekEnd = today.add(1, "week").endOf("week");
+  const thisMonthStart = today.startOf("month");
+  const thisMonthEnd = today.endOf("month");
 
-  // Find all litigation matters with hearings
-  const litigations = await LitigationDetail.find({
-    firmId: req.firmId,
-    isDeleted: false,
-    "hearings.0": { $exists: true }, // Only matters with at least one hearing
+  let startDate, endDate, periodName;
+
+  // Handle "all" range: include everything from today through end of next month
+  if (range === "all") {
+    startDate = today;
+    endDate = today.add(2, "month").endOf("month");
+    periodName = "All Upcoming";
+  } else {
+    switch (range) {
+      case "next-week":
+        startDate = nextWeekStart;
+        endDate = nextWeekEnd;
+        periodName = "Next Week";
+        break;
+      case "this-month":
+        startDate = thisMonthStart;
+        endDate = thisMonthEnd;
+        periodName = "This Month";
+        break;
+      case "this-week":
+      default:
+        startDate = thisWeekStart;
+        endDate = thisWeekEnd;
+        periodName = "This Week";
+        break;
+    }
+  }
+
+  // Legacy support: use days parameter if range not provided
+  if (!range) {
+    const futureDate = new Date();
+    futureDate.setDate(futureDate.getDate() + parseInt(days));
+    endDate = dayjs(futureDate);
+    startDate = today;
+    periodName = `Next ${days} Days`;
+  }
+
+  // Fetch all active litigation matters
+  const matters = await Matter.find({
+    firmId,
+    matterType: "litigation",
+    isDeleted: { $ne: true },
+    status: { $in: ["active", "pending", "open"] },
   })
-    .populate({
-      path: "matterId",
-      match: { isDeleted: false }, // Exclude deleted matters
-      select: "matterNumber title client accountOfficer status priority",
-      populate: [
-        {
-          path: "client",
-          select: "firstName lastName email phone companyName",
-        },
-        { path: "accountOfficer", select: "firstName lastName email photo" },
-      ],
-    })
-    .populate({
-      path: "hearings.preparedBy",
-      select: "firstName lastName email photo",
-    })
-    .populate({
-      path: "hearings.lawyerPresent",
-      select: "firstName lastName email photo",
-    })
+    .populate("client", "firstName lastName email phone companyName")
+    .populate("accountOfficer", "firstName lastName email photo")
     .lean();
 
-  // Extract ALL individual hearing records
-  const allHearings = [];
+  const matterIds = matters.map((m) => m._id);
 
-  litigations.forEach((litigation) => {
-    // Skip if matter was deleted
-    if (!litigation.matterId) return;
-    if (!litigation.hearings || litigation.hearings.length === 0) return;
+  const litigationDetails = await LitigationDetail.find({
+    firmId,
+    matterId: { $in: matterIds },
+  })
+    .populate("hearings.lawyerPresent", "firstName lastName email photo")
+    .populate("hearings.preparedBy", "firstName lastName email photo")
+    .lean();
 
-    // Process each hearing as a separate record
+  const litigationMap = {};
+  litigationDetails.forEach((d) => {
+    litigationMap[d.matterId] = d;
+  });
+
+  // Extract and filter hearings
+  const upcomingHearings = [];
+  const allHearingsInRange = [];
+
+  matters.forEach((matter) => {
+    const litigation = litigationMap[matter._id];
+    if (!litigation || !litigation.hearings) return;
+
     litigation.hearings.forEach((hearing) => {
-      // Determine display date: use nextHearingDate if future, otherwise hearing.date
-      const displayDate = hearing.nextHearingDate
-        ? new Date(hearing.nextHearingDate)
-        : new Date(hearing.date);
+      let hearingDate = hearing.date ? dayjs(hearing.date) : null;
 
-      // Include if:
-      // 1. Within date range, OR
-      // 2. Past hearing without outcome (needs attention)
-      const isInRange = displayDate <= futureDate;
-      const needsAttention = !hearing.outcome && new Date(hearing.date) < now;
+      if (hearing.nextHearingDate) {
+        const nextHearing = dayjs(hearing.nextHearingDate);
+        if (nextHearing.isAfter(today, "day")) {
+          hearingDate = nextHearing;
+        }
+      }
 
-      if (isInRange || needsAttention) {
-        allHearings.push({
-          // Hearing-specific fields
+      if (!hearingDate) return;
+
+      // Skip completed hearings that don't have future nextHearingDate
+      if (
+        hearing.outcome &&
+        (!hearing.nextHearingDate ||
+          !dayjs(hearing.nextHearingDate).isAfter(today, "day"))
+      ) {
+        return;
+      }
+
+      // Check if within requested range
+      const isInRange =
+        !hearingDate.isBefore(startDate, "day") &&
+        !hearingDate.isAfter(endDate, "day");
+
+      if (isInRange) {
+        allHearingsInRange.push(hearingDate.toDate());
+
+        upcomingHearings.push({
           _id: hearing._id,
           date: hearing.date,
           purpose: hearing.purpose,
@@ -366,14 +423,14 @@ exports.getUpcomingHearings = catchAsync(async (req, res, next) => {
           notes: hearing.notes,
           nextHearingDate: hearing.nextHearingDate,
           hearingNoticeServed: hearing.hearingNoticeServed,
+          hearingNoticeRequired: hearing.hearingNoticeRequired,
           lawyerPresent: hearing.lawyerPresent,
           preparedBy: hearing.preparedBy,
           createdAt: hearing.createdAt,
           updatedAt: hearing.updatedAt,
 
-          // Litigation context
           litigationDetailId: litigation._id,
-          matterId: litigation.matterId._id,
+          matterId: matter._id,
           suitNo: litigation.suitNo,
           courtName: litigation.courtName,
           courtNo: litigation.courtNo,
@@ -384,41 +441,60 @@ exports.getUpcomingHearings = catchAsync(async (req, res, next) => {
           firstParty: litigation.firstParty,
           secondParty: litigation.secondParty,
 
-          // Populated matter
-          matter: litigation.matterId,
+          matter: {
+            _id: matter._id,
+            matterNumber: matter.matterNumber,
+            title: matter.title,
+            client: matter.client,
+            accountOfficer: matter.accountOfficer,
+            status: matter.status,
+            priority: matter.priority,
+          },
 
-          // For sorting/filtering
-          displayDate: displayDate,
-
-          // Store full hearings array for widget (to find linked hearing)
-          hearings: litigation.hearings,
+          displayDate: hearingDate.toDate(),
         });
       }
     });
   });
 
   // Sort by display date (earliest first)
-  allHearings.sort((a, b) => new Date(a.displayDate) - new Date(b.displayDate));
+  upcomingHearings.sort(
+    (a, b) => new Date(a.displayDate) - new Date(b.displayDate),
+  );
 
   // Apply limit
-  const limitedHearings = allHearings.slice(0, parseInt(limit));
+  const limitedHearings = upcomingHearings.slice(0, parseInt(limit));
 
   // Calculate statistics
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const todayEnd = new Date();
+  todayEnd.setHours(23, 59, 59, 999);
+
+  const weekStart = thisWeekStart.toDate();
+  const weekEnd = thisWeekEnd.toDate();
+  const nextWeekStartDate = nextWeekStart.toDate();
+  const nextWeekEndDate = nextWeekEnd.toDate();
+  const monthStart = thisMonthStart.toDate();
+  const monthEnd = thisMonthEnd.toDate();
 
   const stats = {
     total: limitedHearings.length,
     today: limitedHearings.filter((h) => {
-      const hDate = new Date(h.nextHearingDate || h.date);
-      hDate.setHours(0, 0, 0, 0);
-      return hDate.getTime() === today.getTime();
+      const d = new Date(h.displayDate);
+      return d >= todayStart && d <= todayEnd;
     }).length,
     thisWeek: limitedHearings.filter((h) => {
-      const hDate = new Date(h.nextHearingDate || h.date);
-      const weekFromNow = new Date(today);
-      weekFromNow.setDate(weekFromNow.getDate() + 7);
-      return hDate >= today && hDate <= weekFromNow;
+      const d = new Date(h.displayDate);
+      return d >= weekStart && d <= weekEnd;
+    }).length,
+    nextWeek: limitedHearings.filter((h) => {
+      const d = new Date(h.displayDate);
+      return d >= nextWeekStartDate && d <= nextWeekEndDate;
+    }).length,
+    thisMonth: limitedHearings.filter((h) => {
+      const d = new Date(h.displayDate);
+      return d >= monthStart && d <= monthEnd;
     }).length,
     pending: limitedHearings.filter((h) => !h.outcome).length,
     completed: limitedHearings.filter((h) => !!h.outcome).length,
@@ -428,7 +504,7 @@ exports.getUpcomingHearings = catchAsync(async (req, res, next) => {
     status: "success",
     results: limitedHearings.length,
     stats,
-    data: limitedHearings, // Return array directly (Redux expects this)
+    data: limitedHearings,
   });
 });
 
@@ -1330,144 +1406,6 @@ exports.getLitigationDashboard = catchAsync(async (req, res, next) => {
 });
 
 // ============================================
-// GET UPCOMING HEARINGS
-// ============================================
-
-/**
- * @desc    Get upcoming hearings with date range filtering
- * @route   GET /api/v1/litigation/upcoming-hearings
- * @access  Private
- */
-exports.getUpcomingHearings = catchAsync(async (req, res, next) => {
-  const { range } = req.query; // 'this-week', 'next-week', 'this-month'
-  const firmId = req.firmId;
-
-  const today = dayjs().startOf("day");
-  let startDate, endDate;
-
-  // 1. Set strict date boundaries based on the requested range
-  switch (range) {
-    case "next-week":
-      startDate = today.add(1, "week").startOf("week");
-      endDate = today.add(1, "week").endOf("week");
-      break;
-    case "this-month":
-      startDate = today.startOf("month");
-      endDate = today.endOf("month");
-      break;
-    case "this-week":
-    default:
-      // Default to this week
-      startDate = today.startOf("week");
-      endDate = today.endOf("week");
-      break;
-  }
-
-  // 2. Fetch matters and litigation details
-  const matters = await Matter.find({
-    firmId,
-    matterType: "litigation",
-    isDeleted: { $ne: true },
-  })
-    .populate("client", "firstName lastName email phone")
-    .populate("assignedTo", "firstName lastName email")
-    .lean();
-
-  const matterIds = matters.map((m) => m._id);
-
-  const litigationDetails = await LitigationDetail.find({
-    firmId,
-    matterId: { $in: matterIds },
-  })
-    .populate("hearings.lawyerPresent", "firstName lastName")
-    .populate("hearings.preparedBy", "firstName lastName")
-    .lean();
-
-  const litigationMap = {};
-  litigationDetails.forEach((d) => {
-    litigationMap[d.matterId] = d;
-  });
-
-  // 3. Extract and filter the hearings
-  const upcomingHearings = [];
-
-  matters.forEach((matter) => {
-    const litigation = litigationMap[matter._id];
-    if (!litigation || !litigation.hearings) return;
-
-    litigation.hearings.forEach((hearing) => {
-      // Determine the active date: use nextHearingDate if in the future, otherwise use base date
-      let hearingDate = hearing.date ? dayjs(hearing.date) : null;
-
-      if (hearing.nextHearingDate) {
-        const nextHearing = dayjs(hearing.nextHearingDate);
-        if (nextHearing.isAfter(today, "day")) {
-          hearingDate = nextHearing;
-        }
-      }
-
-      if (!hearingDate) return;
-
-      // Skip if the hearing has an outcome AND doesn't have a future nextHearingDate
-      if (
-        hearing.outcome &&
-        (!hearing.nextHearingDate ||
-          !dayjs(hearing.nextHearingDate).isAfter(today, "day"))
-      ) {
-        return;
-      }
-
-      // Check if the date falls perfectly inside our target range
-      const isInRange =
-        !hearingDate.isBefore(startDate, "day") &&
-        !hearingDate.isAfter(endDate, "day");
-
-      if (!isInRange) return; // Skip if outside the requested week/month
-
-      // Add to our final array
-      upcomingHearings.push({
-        matterId: matter._id,
-        matterNumber: matter.matterNumber,
-        matterTitle: matter.title,
-        suitNo: litigation.suitNo,
-        courtName: litigation.courtName,
-        courtNo: litigation.courtNo,
-        courtLocation: litigation.courtLocation,
-        judge: litigation.judge?.[0]?.name || litigation.judge?.name,
-        client: matter.client,
-        assignedTo: matter.assignedTo,
-        hearingDate: hearingDate.toDate(),
-        purpose: hearing.purpose,
-        outcome: hearing.outcome,
-        nextHearingDate: hearing.nextHearingDate,
-        lawyerPresent: hearing.lawyerPresent,
-        notes: hearing.notes,
-        preparedBy: hearing.preparedBy,
-      });
-    });
-  });
-
-  // 4. Sort chronologically
-  upcomingHearings.sort(
-    (a, b) => new Date(a.hearingDate) - new Date(b.hearingDate),
-  );
-
-  // 5. Send clean response
-  res.status(200).json({
-    status: "success",
-    data: {
-      range: range || "this-week",
-      dateRange: {
-        start: startDate.toDate(),
-        end: endDate.toDate(),
-      },
-      count: upcomingHearings.length,
-      hearings: upcomingHearings,
-    },
-  });
-});
-
-// ============================================
 // GET HEARINGS CALENDAR VIEW
 // ============================================
 
@@ -1561,16 +1499,24 @@ exports.getHearingsCalendar = catchAsync(async (req, res, next) => {
     calendarByDate[dateKey].push(event);
   });
 
+  // Calculate counts
+  const counts = {
+    total: events.length,
+    completed: events.filter((e) => e.outcome).length,
+    upcoming: events.filter((e) => !e.outcome).length,
+  };
+
   res.status(200).json({
     status: "success",
     data: {
-      range: range || "this-week",
+      range: "calendar",
       dateRange: {
-        start: startDate.toDate(),
-        end: endDate.toDate(),
+        start: start.toDate(),
+        end: end.toDate(),
       },
       counts,
-      hearings: upcomingHearings,
+      hearings: events,
+      calendarByDate,
     },
   });
 });
@@ -1580,8 +1526,9 @@ exports.getHearingsCalendar = catchAsync(async (req, res, next) => {
 // ============================================
 
 exports.downloadUpcomingHearingsPdf = catchAsync(async (req, res, next) => {
-  const { range } = req.query; // 'this-week', 'next-week', 'this-month'
+  const { range } = req.query; // 'this-week', 'next-week', 'this-month', 'all'
   const firmId = req.firmId;
+  const path = require("path");
 
   const today = dayjs().startOf("day");
   let startDate, endDate, periodName;
@@ -1602,6 +1549,11 @@ exports.downloadUpcomingHearingsPdf = catchAsync(async (req, res, next) => {
       endDate = today.endOf("month");
       periodName = "This Month";
       break;
+    case "all":
+      startDate = today;
+      endDate = today.add(2, "month").endOf("month");
+      periodName = "All Upcoming Hearings";
+      break;
     default:
       startDate = today;
       endDate = today.endOf("week");
@@ -1612,9 +1564,10 @@ exports.downloadUpcomingHearingsPdf = catchAsync(async (req, res, next) => {
     firmId,
     matterType: "litigation",
     isDeleted: { $ne: true },
+    status: { $in: ["active", "pending", "open"] },
   })
     .populate("client", "firstName lastName")
-    .populate("assignedTo", "firstName lastName")
+    .populate("accountOfficer", "firstName lastName")
     .lean();
 
   const matterIds = matters.map((m) => m._id);
@@ -1649,6 +1602,15 @@ exports.downloadUpcomingHearingsPdf = catchAsync(async (req, res, next) => {
 
       if (!hearingDate) return;
 
+      // Skip completed hearings without future nextHearingDate
+      if (
+        hearing.outcome &&
+        (!hearing.nextHearingDate ||
+          !dayjs(hearing.nextHearingDate).isAfter(today, "day"))
+      ) {
+        return;
+      }
+
       const isInRange =
         !hearingDate.isBefore(startDate, "day") &&
         !hearingDate.isAfter(endDate, "day");
@@ -1662,11 +1624,15 @@ exports.downloadUpcomingHearingsPdf = catchAsync(async (req, res, next) => {
         courtName: litigation.courtName,
         courtNo: litigation.courtNo,
         courtLocation: litigation.courtLocation,
+        state: litigation.state,
         judge: litigation.judge?.[0]?.name,
         client: matter.client,
+        accountOfficer: matter.accountOfficer,
         hearingDate: hearingDate.format("YYYY-MM-DD"),
         hearingDay: hearingDate.format("dddd"),
+        hearingTime: "09:00 AM",
         purpose: hearing.purpose,
+        outcome: hearing.outcome,
         nextHearingDate: hearing.nextHearingDate,
         lawyerPresent: hearing.lawyerPresent,
       });
@@ -1675,50 +1641,36 @@ exports.downloadUpcomingHearingsPdf = catchAsync(async (req, res, next) => {
 
   hearings.sort((a, b) => new Date(a.hearingDate) - new Date(b.hearingDate));
 
-  // Render PDF
-  const pug = require("pug");
-  const path = require("path");
+  // Use existing generatePdf utility
+  const { generatePdf } = require("../utils/generatePdf");
+  const Firm = require("../models/firmModel");
 
-  const templatePath = path.join(__dirname, "../views/causeListSimple.pug");
+  const firm = await Firm.findById(firmId);
 
-  const html = pug.renderFile(templatePath, {
-    hearings,
-    periodName,
-    startDate: startDate.format("MMMM D, YYYY"),
-    endDate: endDate.format("MMMM D, YYYY"),
-    generatedAt: new Date().toLocaleDateString("en-US", {
-      weekday: "long",
-      year: "numeric",
-      month: "long",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    }),
-    firmName: "A.T. LUKMAN & CO.",
-  });
-
-  const puppeteer = require("puppeteer");
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  });
-  const page = await browser.newPage();
-
-  await page.setContent(html, { waitUntil: "networkidle0" });
-
-  const pdfBuffer = await page.pdf({
-    format: "A4",
-    printBackground: true,
-    margin: { top: "20px", right: "20px", bottom: "20px", left: "20px" },
-  });
-
-  await browser.close();
-
-  const filename = `upcoming-hearings-${range || "this-week"}-${Date.now()}.pdf`;
-
-  res.setHeader("Content-Type", "application/pdf");
-  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-  res.send(pdfBuffer);
+  generatePdf(
+    {
+      hearings,
+      firm,
+      periodName,
+      startDate: startDate.format("MMMM D, YYYY"),
+      endDate: endDate.format("MMMM D, YYYY"),
+      generatedAt: new Date().toLocaleDateString("en-US", {
+        weekday: "long",
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+      totalHearings: hearings.length,
+    },
+    res,
+    path.resolve(__dirname, "../views/causeListSimple.pug"),
+    path.resolve(
+      __dirname,
+      `../output/hearings-${range || "this-week"}-${Date.now()}.pdf`,
+    ),
+  );
 });
 
 module.exports = exports;
