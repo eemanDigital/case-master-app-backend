@@ -88,54 +88,6 @@ router.get("/firm-storage-info", async (req, res, next) => {
     next(error);
   }
 });
-    }
-
-    // Calculate actual firm-wide storage using direct aggregation
-    let firmObjectId;
-    try {
-      firmObjectId = new mongoose.Types.ObjectId(req.firmId.toString());
-    } catch (e) {
-      return res.status(400).json({ status: "error", message: "Invalid firm ID" });
-    }
-    
-    const usageResult = await File.aggregate([
-      { $match: { firmId: firmObjectId, isDeleted: { $ne: true } } },
-      { $group: { _id: null, totalFiles: { $sum: 1 }, totalSize: { $sum: "$fileSize" } } }
-    ]);
-    
-    const actualStorageUsedGB = usageResult.length > 0 
-      ? usageResult[0].totalSize / (1024 * 1024 * 1024) 
-      : 0;
-    const totalFiles = usageResult.length > 0 ? usageResult[0].totalFiles : 0;
-    
-    // Sync the storage usage to firm document
-    if (Math.abs(actualStorageUsedGB - firm.usage.storageUsedGB) > 0.0001) {
-      firm.usage.storageUsedGB = actualStorageUsedGB;
-      await firm.save();
-    }
-
-    const storageLimitGB = firm.limits.storageGB;
-    const storageUsedGB = actualStorageUsedGB;
-    const isUnlimited = storageLimitGB >= 999999;
-    
-    res.status(200).json({
-      status: "success",
-      data: {
-        plan: firm.subscription.plan,
-        storageLimitGB: isUnlimited ? "Unlimited" : storageLimitGB,
-        storageUsedGB: parseFloat(storageUsedGB.toFixed(4)), // Show more precision
-        storageUsedMB: parseFloat((storageUsedGB * 1024).toFixed(2)), // Also show MB
-        storageAvailableGB: isUnlimited ? "Unlimited" : parseFloat((storageLimitGB - storageUsedGB).toFixed(4)),
-        usagePercentage: isUnlimited ? 0 : Math.round((storageUsedGB / storageLimitGB) * 100),
-        isNearLimit: !isUnlimited && (storageUsedGB / storageLimitGB) > 0.8,
-        isAtLimit: !isUnlimited && storageUsedGB >= storageLimitGB,
-        totalFiles: totalFiles,
-      }
-    });
-  } catch (error) {
-    next(error);
-  }
-});
 
 // Get user's files and storage usage
 router.get("/my-files", fileController.getMyFiles);
