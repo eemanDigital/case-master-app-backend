@@ -728,7 +728,8 @@ exports.getAllMattersWithOfficers = catchAsync(async (req, res, next) => {
       limit,
       sort,
       populate: "accountOfficer,client",
-      select: "matterNumber title description status priority matterType natureOfMatter dateOpened expectedClosureDate client accountOfficer",
+      select:
+        "matterNumber title description status priority matterType natureOfMatter dateOpened expectedClosureDate client accountOfficer",
       status,
       priority,
       matterType,
@@ -772,7 +773,9 @@ exports.getAllMattersWithOfficers = catchAsync(async (req, res, next) => {
       $project: {
         _id: 0,
         officerId: "$_id",
-        officerName: { $concat: ["$officer.firstName", " ", "$officer.lastName"] },
+        officerName: {
+          $concat: ["$officer.firstName", " ", "$officer.lastName"],
+        },
         officerEmail: "$officer.email",
         officerPhoto: "$officer.photo",
         officerRole: "$officer.role",
@@ -906,9 +909,8 @@ exports.getMyMattersSummary = catchAsync(async (req, res, next) => {
   ]);
 
   // Calculate completion rate
-  const completionRate = totalMatters > 0 
-    ? Math.round((completedMatters / totalMatters) * 100) 
-    : 0;
+  const completionRate =
+    totalMatters > 0 ? Math.round((completedMatters / totalMatters) * 100) : 0;
 
   res.status(200).json({
     status: "success",
