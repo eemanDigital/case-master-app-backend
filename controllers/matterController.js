@@ -4,7 +4,7 @@ const Matter = require("../models/matterModel");
 const User = require("../models/userModel");
 const LitigationDetail = require("../models/litigationDetailModel");
 const CorporateDetail = require("../models/corporateDetailModel");
-const AdvisoryDetail = require("../models/advisoryDetailModel");
+const AdvisoryDetail = require("../models/advisorydetailModel");
 const PropertyDetail = require("../models/propertyDetailModel");
 const {
   RetainerDetail,
