@@ -162,6 +162,20 @@ exports.manualStatusCheck = catchAsync(async (req, res, next) => {
     updateOps.$push = { actionItems: { $each: newActionItems } };
   }
 
+  // Ensure actionItems and clientOutreach arrays exist
+  if (!entity.actionItems) {
+    updateOps.$set.actionItems = [];
+  }
+  if (!entity.clientOutreach) {
+    updateOps.$set.clientOutreach = {
+      outreachMethod: "none",
+      outreachNotes: "",
+      clientAcknowledged: false,
+      communicationTemplates: {},
+      templatesSent: {},
+    };
+  }
+
   await ComplianceTracker.findByIdAndUpdate(entity._id, updateOps, {
     runValidators: false,
   });
@@ -188,7 +202,45 @@ exports.manualStatusCheck = catchAsync(async (req, res, next) => {
   });
 });
 
-// ─── Watchdog Report (all entities requiring attention) ───────────────────────
+// ─── Fix Existing Entities (initialize missing fields) ───────────────────────
+exports.fixExistingEntities = catchAsync(async (req, res, next) => {
+  const result = await ComplianceTracker.updateMany(
+    {
+      firmId: req.firmId,
+      isDeleted: { $ne: true },
+      $or: [
+        { actionItems: { $exists: false } },
+        { clientOutreach: { $exists: false } },
+        { revenueOpportunityDetails: { $exists: false } },
+      ],
+    },
+    {
+      $set: {
+        actionItems: [],
+        clientOutreach: {
+          outreachMethod: "none",
+          outreachNotes: "",
+          clientAcknowledged: false,
+          communicationTemplates: {},
+          templatesSent: {},
+        },
+        revenueOpportunityDetails: {
+          serviceType: "status_restoration",
+          quoteStatus: "none",
+          leadScore: "warm",
+        },
+      },
+    },
+  );
+
+  res.status(200).json({
+    status: "success",
+    message: `Fixed ${result.modifiedCount} entities`,
+    data: result,
+  });
+});
+
+// ─── Watchdog Report (all entities requiring attention) ────────────────────────
 exports.getWatchdogReport = catchAsync(async (req, res, next) => {
   const alerts = await ComplianceTracker.find({
     firmId: req.firmId,
@@ -401,7 +453,7 @@ exports.getAllMonitoredEntities = catchAsync(async (req, res, next) => {
       .select(
         "entityName entityType rcNumber bnNumber cacPortalStatus " +
           "clientId assignedTo isRevenueOpportunity revenueOpportunityAmount " +
-          "currentComplianceStatus",
+          "currentComplianceStatus actionItems clientOutreach revenueOpportunityDetails statusChangeDetails",
       )
       .sort({
         "cacPortalStatus.requiresAttention": -1,
@@ -619,7 +671,6 @@ exports.createMonitoredEntity = catchAsync(async (req, res, next) => {
     entityName,
     rcNumber: registrationNumber,
     entityType: mappedEntityType,
-    // ✅ FIXED: include required fields
     clientId,
     incorporationDate: incorporationDate || undefined,
     assignedTo: assignedTo || req.user._id,
@@ -629,10 +680,23 @@ exports.createMonitoredEntity = catchAsync(async (req, res, next) => {
     cacPortalStatus: {
       portalStatus: initialPortalStatus,
       lastChecked: new Date(),
-      requiresAttention: ["INACTIVE", "STRUCK-OFF", "WOUND-UP"].includes(
+      requiresAttention: ["INACTIVE", "STRUCK-OFF", "WOUND-UP", "DISSOLVED", "SUSPENDED"].includes(
         initialPortalStatus,
       ),
       watchdogNotes: initialWatchdogNotes,
+    },
+    actionItems: [],
+    clientOutreach: {
+      outreachMethod: "none",
+      outreachNotes: "",
+      clientAcknowledged: false,
+      communicationTemplates: {},
+      templatesSent: {},
+    },
+    revenueOpportunityDetails: {
+      serviceType: "status_restoration",
+      quoteStatus: "none",
+      leadScore: "warm",
     },
   });
 
