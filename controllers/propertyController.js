@@ -674,21 +674,533 @@ exports.deletePayment = catchAsync(async (req, res, next) => {
 });
 
 // ============================================
-// LEGAL PROCESSES MANAGEMENT
+// LEASE AGREEMENT MANAGEMENT
 // ============================================
 
-exports.updateTitleSearch = catchAsync(async (req, res, next) => {
+exports.updateLeaseAgreement = catchAsync(async (req, res, next) => {
   const { matterId } = req.params;
-  const titleSearchData = req.body;
+  const leaseData = req.body;
 
   const propertyDetail = await PropertyDetail.findOneAndUpdate(
     { matterId, firmId: req.firmId },
     {
       $set: {
-        titleSearch: {
-          ...titleSearchData,
+        leaseAgreement: {
+          ...leaseData,
           updatedBy: req.user._id,
           updatedAt: new Date(),
+        },
+      },
+      lastModifiedBy: req.user._id,
+    },
+    { new: true, runValidators: true },
+  );
+
+  if (!propertyDetail) {
+    return next(new AppError("Property details not found", 404));
+  }
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      propertyDetail,
+    },
+  });
+});
+
+// ============================================
+// LEASE TRACKING & EXPIRATION MANAGEMENT
+// ============================================
+
+exports.getExpiringLeases = catchAsync(async (req, res, next) => {
+  const { page = 1, limit = 50, urgency, daysThreshold, status } = req.query;
+
+  const firmQuery = {
+    firmId: req.firmId,
+    isDeleted: false,
+    $or: [
+      { transactionType: "lease" },
+      { transactionType: "sublease" },
+      { transactionType: "tenancy_matter" },
+    ],
+  };
+
+  const now = new Date();
+  let dateFilter = {};
+
+  if (daysThreshold) {
+    const thresholdDate = new Date(
+      now.getTime() + daysThreshold * 24 * 60 * 60 * 1000,
+    );
+    dateFilter = {
+      "leaseAgreement.expiryDate": {
+        $gte: now,
+        $lte: thresholdDate,
+      },
+    };
+  } else if (urgency) {
+    switch (urgency) {
+      case "critical":
+        dateFilter = {
+          "leaseAgreement.expiryDate": {
+            $gte: now,
+            $lte: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
+          },
+        };
+        break;
+      case "warning":
+        dateFilter = {
+          "leaseAgreement.expiryDate": {
+            $gte: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
+            $lte: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
+          },
+        };
+        break;
+      case "notice":
+        dateFilter = {
+          "leaseAgreement.expiryDate": {
+            $gte: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000),
+            $lte: new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000),
+          },
+        };
+        break;
+      case "all":
+      default:
+        dateFilter = {
+          "leaseAgreement.expiryDate": {
+            $gte: now,
+            $lte: new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000),
+          },
+        };
+    }
+  }
+
+  if (status) {
+    firmQuery["leaseAgreement.status"] = status;
+  }
+
+  const skip = (page - 1) * limit;
+
+  const propertyDetails = await PropertyDetail.find({
+    ...firmQuery,
+    ...dateFilter,
+  })
+    .populate({
+      path: "matterId",
+      select:
+        "matterNumber title client accountOfficer status priority dateOpened",
+      match: { isDeleted: false },
+      populate: [
+        { path: "client", select: "firstName lastName email phone" },
+        { path: "accountOfficer", select: "firstName lastName email photo" },
+      ],
+    })
+    .sort({ "leaseAgreement.expiryDate": 1 })
+    .skip(skip)
+    .limit(Number(limit));
+
+  const filteredDetails = propertyDetails.filter((detail) => detail.matterId);
+
+  const enrichedDetails = filteredDetails.map((detail) => {
+    const expiryDate = new Date(detail.leaseAgreement?.expiryDate);
+    const daysRemaining = Math.ceil((expiryDate - now) / (1000 * 60 * 60 * 24));
+    const weeksRemaining = Math.floor(daysRemaining / 7);
+    const monthsRemaining = Math.floor(daysRemaining / 30);
+
+    let urgencyLevel = "safe";
+    if (daysRemaining <= 0) urgencyLevel = "expired";
+    else if (daysRemaining <= 7) urgencyLevel = "critical";
+    else if (daysRemaining <= 30) urgencyLevel = "warning";
+    else if (daysRemaining <= 90) urgencyLevel = "notice";
+
+    return {
+      ...detail.toObject(),
+      leaseCountdown: {
+        days: daysRemaining,
+        weeks: weeksRemaining,
+        months: monthsRemaining,
+        urgency: urgencyLevel,
+      },
+    };
+  });
+
+  const total = await PropertyDetail.countDocuments({
+    ...firmQuery,
+    ...dateFilter,
+  });
+
+  res.status(200).json({
+    status: "success",
+    results: enrichedDetails.length,
+    total,
+    page: Number(page),
+    totalPages: Math.ceil(total / limit),
+    data: {
+      leases: enrichedDetails,
+    },
+  });
+});
+
+exports.getLeaseStats = catchAsync(async (req, res, next) => {
+  const now = new Date();
+  const thirtyDaysFromNow = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+  const sixtyDaysFromNow = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000);
+  const ninetyDaysFromNow = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000);
+
+  const firmQuery = {
+    firmId: req.firmId,
+    isDeleted: false,
+    "leaseAgreement.expiryDate": { $exists: true },
+  };
+
+  const [
+    totalLeases,
+    activeLeases,
+    expiringIn7Days,
+    expiringIn30Days,
+    expiringIn60Days,
+    expiringIn90Days,
+    expiredLeases,
+    renewalInProgress,
+  ] = await Promise.all([
+    PropertyDetail.countDocuments({
+      ...firmQuery,
+      $or: [
+        { transactionType: "lease" },
+        { transactionType: "sublease" },
+        { transactionType: "tenancy_matter" },
+      ],
+    }),
+    PropertyDetail.countDocuments({
+      ...firmQuery,
+      "leaseAgreement.status": "active",
+    }),
+    PropertyDetail.countDocuments({
+      ...firmQuery,
+      "leaseAgreement.expiryDate": {
+        $gte: now,
+        $lte: new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000),
+      },
+    }),
+    PropertyDetail.countDocuments({
+      ...firmQuery,
+      "leaseAgreement.expiryDate": {
+        $gte: now,
+        $lte: thirtyDaysFromNow,
+      },
+    }),
+    PropertyDetail.countDocuments({
+      ...firmQuery,
+      "leaseAgreement.expiryDate": {
+        $gte: thirtyDaysFromNow,
+        $lte: sixtyDaysFromNow,
+      },
+    }),
+    PropertyDetail.countDocuments({
+      ...firmQuery,
+      "leaseAgreement.expiryDate": {
+        $gte: sixtyDaysFromNow,
+        $lte: ninetyDaysFromNow,
+      },
+    }),
+    PropertyDetail.countDocuments({
+      ...firmQuery,
+      "leaseAgreement.expiryDate": { $lt: now },
+    }),
+    PropertyDetail.countDocuments({
+      firmId: req.firmId,
+      isDeleted: false,
+      "renewalTracking.renewalStatus": "in-progress",
+    }),
+  ]);
+
+  const totalRentValue = await PropertyDetail.aggregate([
+    {
+      $match: {
+        firmId: req.firmId,
+        isDeleted: false,
+        "leaseAgreement.status": "active",
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        totalMonthlyRent: {
+          $sum: {
+            $cond: [
+              { $eq: ["$rentAmount.frequency", "monthly"] },
+              "$rentAmount.amount",
+              {
+                $cond: [
+                  { $eq: ["$rentAmount.frequency", "annually"] },
+                  { $divide: ["$rentAmount.amount", 12] },
+                  {
+                    $cond: [
+                      { $eq: ["$rentAmount.frequency", "quarterly"] },
+                      { $divide: ["$rentAmount.amount", 3] },
+                      "$rentAmount.amount",
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        totalAnnualRent: {
+          $sum: {
+            $cond: [
+              { $eq: ["$rentAmount.frequency", "annually"] },
+              "$rentAmount.amount",
+              {
+                $cond: [
+                  { $eq: ["$rentAmount.frequency", "monthly"] },
+                  { $multiply: ["$rentAmount.amount", 12] },
+                  {
+                    $cond: [
+                      { $eq: ["$rentAmount.frequency", "quarterly"] },
+                      { $multiply: ["$rentAmount.amount", 4] },
+                      "$rentAmount.amount",
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      },
+    },
+  ]);
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      overview: {
+        totalLeases,
+        activeLeases,
+        expiredLeases,
+        renewalInProgress,
+      },
+      expirationAlerts: {
+        expiringIn7Days,
+        expiringIn30Days,
+        expiringIn60Days,
+        expiringIn90Days,
+      },
+      financialSummary: totalRentValue[0] || {
+        totalMonthlyRent: 0,
+        totalAnnualRent: 0,
+      },
+    },
+  });
+});
+
+exports.updateLeaseAlertSettings = catchAsync(async (req, res, next) => {
+  const { matterId } = req.params;
+  const alertSettings = req.body;
+
+  const propertyDetail = await PropertyDetail.findOneAndUpdate(
+    { matterId, firmId: req.firmId },
+    {
+      $set: {
+        leaseAlertSettings: {
+          ...alertSettings,
+          updatedBy: req.user._id,
+          updatedAt: new Date(),
+        },
+      },
+      lastModifiedBy: req.user._id,
+    },
+    { new: true, runValidators: true },
+  );
+
+  if (!propertyDetail) {
+    return next(new AppError("Property details not found", 404));
+  }
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      propertyDetail,
+    },
+  });
+});
+
+exports.addLeaseMilestone = catchAsync(async (req, res, next) => {
+  const { matterId } = req.params;
+  const milestoneData = req.body;
+
+  const propertyDetail = await PropertyDetail.findOneAndUpdate(
+    { matterId, firmId: req.firmId },
+    {
+      $push: {
+        leaseMilestones: {
+          ...milestoneData,
+          createdAt: new Date(),
+        },
+      },
+      lastModifiedBy: req.user._id,
+    },
+    { new: true, runValidators: true },
+  );
+
+  if (!propertyDetail) {
+    return next(new AppError("Property details not found", 404));
+  }
+
+  const newMilestone =
+    propertyDetail.leaseMilestones[propertyDetail.leaseMilestones.length - 1];
+
+  res.status(201).json({
+    status: "success",
+    data: {
+      propertyDetail,
+      newMilestone,
+    },
+  });
+});
+
+exports.updateLeaseMilestone = catchAsync(async (req, res, next) => {
+  const { matterId, milestoneId } = req.params;
+  const updateData = req.body;
+
+  const setObject = { lastModifiedBy: req.user._id };
+
+  Object.keys(updateData).forEach((key) => {
+    setObject[`leaseMilestones.$.${key}`] = updateData[key];
+  });
+
+  const propertyDetail = await PropertyDetail.findOneAndUpdate(
+    {
+      matterId,
+      firmId: req.firmId,
+      "leaseMilestones._id": milestoneId,
+    },
+    { $set: setObject },
+    { new: true, runValidators: true },
+  );
+
+  if (!propertyDetail) {
+    return next(new AppError("Lease milestone not found", 404));
+  }
+
+  const updatedMilestone = propertyDetail.leaseMilestones.id(milestoneId);
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      propertyDetail,
+      updatedMilestone,
+    },
+  });
+});
+
+exports.deleteLeaseMilestone = catchAsync(async (req, res, next) => {
+  const { matterId, milestoneId } = req.params;
+
+  const propertyDetail = await PropertyDetail.findOneAndUpdate(
+    { matterId, firmId: req.firmId },
+    {
+      $pull: { leaseMilestones: { _id: milestoneId } },
+      lastModifiedBy: req.user._id,
+    },
+    { new: true },
+  );
+
+  if (!propertyDetail) {
+    return next(new AppError("Property details or milestone not found", 404));
+  }
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      propertyDetail,
+      message: "Milestone removed successfully",
+    },
+  });
+});
+
+exports.initiateRenewal = catchAsync(async (req, res, next) => {
+  const { matterId } = req.params;
+  const { renewalTerms, proposedNewRent, rentIncreasePercentage } = req.body;
+
+  const propertyDetail = await PropertyDetail.findOne({
+    matterId,
+    firmId: req.firmId,
+  });
+
+  if (!propertyDetail) {
+    return next(new AppError("Property details not found", 404));
+  }
+
+  const leaseExpiryDate = new Date(propertyDetail.leaseAgreement?.expiryDate);
+  const renewalDeadline = new Date(leaseExpiryDate);
+  const noticePeriod =
+    req.body.renewalNoticePeriod ||
+    propertyDetail.renewalTracking?.renewalNoticePeriod ||
+    90;
+  renewalDeadline.setDate(renewalDeadline.getDate() - noticePeriod);
+
+  propertyDetail.renewalTracking = {
+    renewalInitiated: true,
+    renewalInitiatedDate: new Date(),
+    renewalDeadline,
+    renewalNoticePeriod: noticePeriod,
+    proposedNewRent: proposedNewRent || null,
+    rentIncreasePercentage: rentIncreasePercentage || 0,
+    renewalTerms: renewalTerms || "",
+    renewalStatus: "in-progress",
+  };
+
+  propertyDetail.lastModifiedBy = req.user._id;
+  await propertyDetail.save();
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      propertyDetail,
+    },
+  });
+});
+
+exports.updateRenewalTracking = catchAsync(async (req, res, next) => {
+  const { matterId } = req.params;
+  const updateData = req.body;
+
+  const setObject = { lastModifiedBy: req.user._id };
+
+  Object.keys(updateData).forEach((key) => {
+    setObject[`renewalTracking.${key}`] = updateData[key];
+  });
+
+  const propertyDetail = await PropertyDetail.findOneAndUpdate(
+    { matterId, firmId: req.firmId },
+    { $set: setObject },
+    { new: true, runValidators: true },
+  );
+
+  if (!propertyDetail) {
+    return next(new AppError("Property details not found", 404));
+  }
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      propertyDetail,
+    },
+  });
+});
+
+exports.addNegotiation = catchAsync(async (req, res, next) => {
+  const { matterId } = req.params;
+  const negotiationData = req.body;
+
+  const propertyDetail = await PropertyDetail.findOneAndUpdate(
+    { matterId, firmId: req.firmId },
+    {
+      $push: {
+        "renewalTracking.negotiationsHistory": {
+          ...negotiationData,
+          proposedDate: new Date(),
         },
       },
       lastModifiedBy: req.user._id,
@@ -1266,12 +1778,17 @@ exports.generatePropertyReportPdf = catchAsync(async (req, res, next) => {
   const firm = await Firm.findById(firmId);
 
   // Calculate financial summary - handle nested objects
-  const purchasePrice = propertyDetails?.purchasePrice?.amount || propertyDetails?.purchasePrice || 0;
-  const rentAmount = propertyDetails?.rentAmount?.amount || propertyDetails?.rentAmount || 0;
+  const purchasePrice =
+    propertyDetails?.purchasePrice?.amount ||
+    propertyDetails?.purchasePrice ||
+    0;
+  const rentAmount =
+    propertyDetails?.rentAmount?.amount || propertyDetails?.rentAmount || 0;
   const totalAmount = purchasePrice || rentAmount || 0;
-  const amountPaid = propertyDetails?.paymentSchedule
-    ?.filter(p => p.status === "paid")
-    ?.reduce((sum, p) => sum + (p.amount || 0), 0) || 0;
+  const amountPaid =
+    propertyDetails?.paymentSchedule
+      ?.filter((p) => p.status === "paid")
+      ?.reduce((sum, p) => sum + (p.amount || 0), 0) || 0;
 
   const reportData = {
     matter: matter.toObject(),
