@@ -600,6 +600,248 @@ class GenericPdfGenerator {
     });
   }
 
+  /**
+   * Row of summary "cards" (e.g. Deal Value · Type · Closing date).
+   * cards: [{ label, value, accent?, color? }]
+   */
+  addKpiCards(cards = []) {
+    if (!cards.length) return;
+    const gap = 10;
+    const n = cards.length;
+    const cardW = (this.pageWidth - gap * (n - 1)) / n;
+    const cardH = 54;
+
+    this.checkY(cardH + this.spacing.lg);
+    const startY = this.y;
+
+    cards.forEach((c, i) => {
+      const x = this.leftMargin + i * (cardW + gap);
+      this.doc.roundedRect(x, startY, cardW, cardH, 3).fill(COLORS.gray50);
+      this.doc.rect(x, startY, 3, cardH).fill(c.accent || COLORS.gold);
+
+      this.doc
+        .fontSize(SIZES.micro)
+        .font(FONTS.bold)
+        .fillColor(COLORS.textMuted)
+        .text(String(c.label || "").toUpperCase(), x + 11, startY + 9, {
+          width: cardW - 18,
+          ellipsis: true,
+        });
+
+      this.doc
+        .fontSize(SIZES.h3 + 1)
+        .font(FONTS.bold)
+        .fillColor(c.color || COLORS.navy)
+        .text(String(c.value ?? "—"), x + 11, startY + 23, {
+          width: cardW - 18,
+          lineGap: 1,
+        });
+    });
+
+    this.isCurrentPageDirty = true;
+    this.y = startY + cardH + this.spacing.lg;
+  }
+
+  /**
+   * Multi-column definition grid. items: [{ label, value, bold?, color? }]
+   */
+  addKeyValueGrid(items = [], options = {}) {
+    const cols = options.cols || 2;
+    const gap = 16;
+    const colW = (this.pageWidth - gap * (cols - 1)) / cols;
+    const labelSize = SIZES.small;
+    const valueSize = SIZES.body;
+
+    for (let idx = 0; idx < items.length; idx += cols) {
+      const rowItems = items.slice(idx, idx + cols);
+
+      let rowH = 0;
+      rowItems.forEach((it) => {
+        const lh = this.doc.heightOfString(String(it.label || ""), {
+          width: colW,
+          fontSize: labelSize,
+        });
+        const vh = this.doc.heightOfString(String(it.value ?? "—"), {
+          width: colW,
+          fontSize: valueSize,
+        });
+        rowH = Math.max(rowH, lh + 2 + vh);
+      });
+      rowH += 10;
+
+      this.checkY(rowH + this.spacing.sm);
+      const startY = this.y;
+
+      rowItems.forEach((it, c) => {
+        const x = this.leftMargin + c * (colW + gap);
+        this.doc
+          .fontSize(labelSize)
+          .font(FONTS.regular)
+          .fillColor(COLORS.textMuted)
+          .text(String(it.label || ""), x, startY, { width: colW });
+        const lh = this.doc.heightOfString(String(it.label || ""), {
+          width: colW,
+          fontSize: labelSize,
+        });
+        this.doc
+          .fontSize(valueSize)
+          .font(it.bold ? FONTS.bold : FONTS.regular)
+          .fillColor(it.color || COLORS.textPrimary)
+          .text(String(it.value ?? "—"), x, startY + lh + 2, {
+            width: colW,
+            lineGap: 1,
+          });
+      });
+
+      this.isCurrentPageDirty = true;
+      this.y = startY + rowH;
+      drawHRule(this.doc, this.leftMargin, this.y, this.pageWidth, COLORS.gray100, 0.5);
+      this.y += this.spacing.sm;
+    }
+  }
+
+  /**
+   * Generic data table with wrapping rows, zebra striping, optional status
+   * badges and automatic page breaks with a repeated header.
+   *
+   * options: { widths:number[], aligns:("left"|"right"|"center")[],
+   *            statusColumns:number[], fontSize?, emptyText? }
+   */
+  addDataTable(headers = [], rows = [], options = {}) {
+    const {
+      widths,
+      aligns = [],
+      statusColumns = [],
+      fontSize = SIZES.small,
+      emptyText = "No records",
+    } = options;
+
+    const n = headers.length;
+    if (!n) return;
+
+    const weights =
+      widths && widths.length === n ? widths : new Array(n).fill(1);
+    const totalWeight = weights.reduce((a, b) => a + b, 0);
+    const colW = weights.map((w) => (w / totalWeight) * this.pageWidth);
+    const padX = 6;
+    const headerH = 20;
+
+    const drawHeader = () => {
+      this.doc
+        .rect(this.leftMargin, this.y, this.pageWidth, headerH)
+        .fill(COLORS.navy);
+      let x = this.leftMargin;
+      headers.forEach((h, i) => {
+        this.doc
+          .fillColor(COLORS.white)
+          .fontSize(fontSize)
+          .font(FONTS.bold)
+          .text(String(h), x + padX, this.y + 6, {
+            width: colW[i] - padX * 2,
+            align: aligns[i] || "left",
+          });
+        x += colW[i];
+      });
+      this.y += headerH;
+    };
+
+    this.checkY(headerH + 24);
+    drawHeader();
+
+    if (!rows.length) {
+      this.doc
+        .fontSize(fontSize)
+        .font(FONTS.regular)
+        .fillColor(COLORS.textMuted)
+        .text(emptyText, this.leftMargin + padX, this.y + 6, {
+          width: this.pageWidth - padX * 2,
+        });
+      this.isCurrentPageDirty = true;
+      this.y += 22 + this.spacing.lg;
+      return;
+    }
+
+    rows.forEach((row, idx) => {
+      const cellHeights = row.map((cell, i) =>
+        this.doc.heightOfString(String(cell ?? "—"), {
+          width: colW[i] - padX * 2,
+          fontSize,
+        }),
+      );
+      const rowH = Math.max(...cellHeights, 12) + 8;
+
+      if (this.y + rowH > this.bottomGuard) {
+        this.isCurrentPageDirty = false;
+        this.addPageBreak();
+        drawHeader();
+      }
+
+      if (idx % 2 === 1) {
+        this.doc
+          .rect(this.leftMargin, this.y, this.pageWidth, rowH)
+          .fill(COLORS.gray50);
+      }
+
+      let x = this.leftMargin;
+      row.forEach((cell, i) => {
+        const cellY = this.y + 4;
+        if (statusColumns.includes(i)) {
+          drawStatusBadge(this.doc, cell, x + padX, cellY);
+        } else {
+          this.doc
+            .fillColor(COLORS.textPrimary)
+            .fontSize(fontSize)
+            .font(FONTS.regular)
+            .text(String(cell ?? "—"), x + padX, cellY, {
+              width: colW[i] - padX * 2,
+              align: aligns[i] || "left",
+              lineGap: 1,
+            });
+        }
+        x += colW[i];
+      });
+
+      this.y += rowH;
+      drawHRule(this.doc, this.leftMargin, this.y, this.pageWidth, COLORS.gray200, 0.4);
+    });
+
+    this.isCurrentPageDirty = true;
+    this.y += this.spacing.lg;
+  }
+
+  /** Small tinted callout box (notes, disclaimers, key facts). */
+  addNote(text, options = {}) {
+    if (!text) return;
+    const { type = "info" } = options;
+    const palette = {
+      info: { bg: COLORS.infoLight, bar: COLORS.info },
+      warning: { bg: COLORS.warningLight, bar: COLORS.warning },
+      success: { bg: COLORS.successLight, bar: COLORS.success },
+      gold: { bg: COLORS.goldLight, bar: COLORS.gold },
+    }[type] || { bg: COLORS.infoLight, bar: COLORS.info };
+
+    const innerW = this.pageWidth - 26;
+    const textH = this.doc.heightOfString(text, {
+      width: innerW,
+      fontSize: SIZES.small,
+    });
+    const boxH = textH + 16;
+
+    this.checkY(boxH + this.spacing.md);
+    const startY = this.y;
+
+    this.doc.rect(this.leftMargin, startY, this.pageWidth, boxH).fill(palette.bg);
+    this.doc.rect(this.leftMargin, startY, 3, boxH).fill(palette.bar);
+    this.doc
+      .fontSize(SIZES.small)
+      .font(FONTS.regular)
+      .fillColor(COLORS.textSecondary)
+      .text(text, this.leftMargin + 13, startY + 8, { width: innerW, lineGap: 1 });
+
+    this.isCurrentPageDirty = true;
+    this.y = startY + boxH + this.spacing.lg;
+  }
+
   // ── Footer ────────────────────────────────────────────────────────────────
 
   _drawFooterOnPage(pageNumber, totalPages) {
