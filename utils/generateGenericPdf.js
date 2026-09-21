@@ -138,52 +138,108 @@ class GenericPdfGenerator {
 
   // ── Header ────────────────────────────────────────────────────────────────
 
-  /** Full navy header — call ONCE on the first page only. */
+  /**
+   * Full branded header — call ONCE on the first page only.
+   *
+   * Supported options (all optional except firmName):
+   *   firmName, headerTitle, matterNumber, subtitle (matter title),
+   *   firmContact (address · phone · email · RC), documentLabel
+   */
   addHeader() {
-    const { headerTitle = "Matter Report", matterNumber = "" } = this.options;
+    const {
+      headerTitle = "Matter Report",
+      matterNumber = "",
+      firmName = "Law Firm",
+      firmContact = "",
+      subtitle = "",
+    } = this.options;
 
-    this.doc.rect(0, 0, this.doc.page.width, 78).fill(COLORS.navy);
+    const pageW = this.doc.page.width;
+    const headerH = 92;
+    const rightX = 360;
+    const rightW = pageW - rightX - this.leftMargin;
 
+    // Navy band + gold base rule
+    this.doc.rect(0, 0, pageW, headerH).fill(COLORS.navy);
+    this.doc.rect(0, headerH, pageW, 3).fill(COLORS.gold);
+
+    // ── Left: firm identity ──────────────────────────────────────────────
     this.doc
       .fillColor(COLORS.white)
-      .fontSize(SIZES.h1)
+      .fontSize(SIZES.h1 + 3)
       .font(FONTS.bold)
-      .text(this.options.firmName || "Law Firm", this.leftMargin, 14, {
-        width: 300,
-      });
+      .text(firmName, this.leftMargin, 16, { width: 300, ellipsis: true });
 
-    this.doc.rect(this.leftMargin, 36, 60, 1.5).fill(COLORS.gold);
+    this.doc.rect(this.leftMargin, 40, 54, 2).fill(COLORS.gold);
 
     this.doc
       .fontSize(SIZES.micro)
       .fillColor(COLORS.gold)
       .font(FONTS.bold)
-      .text(headerTitle.toUpperCase(), this.leftMargin, 41, { width: 300 });
+      .text(String(headerTitle).toUpperCase(), this.leftMargin, 48, {
+        width: 300,
+      });
 
-    const rightX = 400;
+    if (firmContact) {
+      this.doc
+        .fontSize(SIZES.micro)
+        .fillColor(COLORS.navyLight)
+        .font(FONTS.regular)
+        .text(firmContact, this.leftMargin, 62, { width: 300, ellipsis: true });
+    }
+
+    // ── Right: matter reference block ────────────────────────────────────
     if (matterNumber) {
       this.doc
         .fontSize(SIZES.micro)
         .fillColor(COLORS.navyLight)
         .font(FONTS.regular)
-        .text("MATTER NO.", rightX, 16, { width: 155, align: "right" });
+        .text("MATTER NO.", rightX, 16, { width: rightW, align: "right" });
       this.doc
-        .fontSize(SIZES.body)
+        .fontSize(SIZES.h3)
         .fillColor(COLORS.white)
         .font(FONTS.bold)
-        .text(matterNumber, rightX, 28, { width: 155, align: "right" });
+        .text(matterNumber, rightX, 27, { width: rightW, align: "right" });
     }
 
     this.doc
       .fontSize(SIZES.micro)
       .fillColor(COLORS.navyLight)
       .font(FONTS.regular)
-      .text(formatDateTime(new Date()), rightX, matterNumber ? 42 : 28, {
-        width: 155,
+      .text("GENERATED", rightX, matterNumber ? 48 : 27, {
+        width: rightW,
+        align: "right",
+      });
+    this.doc
+      .fontSize(SIZES.small)
+      .fillColor(COLORS.white)
+      .font(FONTS.regular)
+      .text(formatDateTime(new Date()), rightX, matterNumber ? 57 : 38, {
+        width: rightW,
         align: "right",
       });
 
-    this.y = 90;
+    this.y = headerH + 18;
+
+    // ── Optional matter title banner ─────────────────────────────────────
+    if (subtitle) {
+      const textW = this.pageWidth - 26;
+      const h =
+        this.doc.heightOfString(subtitle, {
+          width: textW,
+          fontSize: SIZES.h3,
+        }) + 18;
+
+      this.doc.rect(this.leftMargin, this.y, this.pageWidth, h).fill(COLORS.navyUltraLight);
+      this.doc.rect(this.leftMargin, this.y, 3, h).fill(COLORS.gold);
+      this.doc
+        .fontSize(SIZES.h3)
+        .font(FONTS.bold)
+        .fillColor(COLORS.navy)
+        .text(subtitle, this.leftMargin + 13, this.y + 8, { width: textW });
+
+      this.y += h + 14;
+    }
     // ← NOT setting isCurrentPageDirty — first field draw will do that.
   }
 
